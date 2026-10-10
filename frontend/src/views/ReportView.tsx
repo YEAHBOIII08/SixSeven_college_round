@@ -20,11 +20,13 @@ import {
 import { REPORT_DATA } from '../data/mockData';
 import { riskColors, scoreColor } from '../utils/ui';
 import type { AttackStep, CategoryScore, TargetConfig } from '../types';
+import type { Scan, ScanAttempt } from './ExecutionHUD';
 
 interface ReportViewProps {
   onBack: () => void;
   onViewDefensive: () => void;
   config?: TargetConfig | null;
+  scan?: Scan | null;
 }
 
 const iconMap: Record<string, typeof Brain> = {
@@ -205,7 +207,7 @@ function AttackStepCard({
                     <p className="text-[10px] text-zinc-600 font-mono mb-1.5 uppercase tracking-wider">
                       Result
                     </p>
-                    <p className={`text-xs font-mono ${colors.text}`}>{step.result}</p>
+                    <pre className={`text-xs font-mono whitespace-pre-wrap break-words max-h-72 overflow-auto ${colors.text}`}>{step.result}</pre>
                   </div>
                 </div>
               </motion.div>
@@ -217,17 +219,26 @@ function AttackStepCard({
   );
 }
 
-export default function ReportView({ onBack, onViewDefensive, config }: ReportViewProps) {
+export default function ReportView({ onBack, onViewDefensive, config, scan }: ReportViewProps) {
   const targetName = config?.name || REPORT_DATA.targetName;
   const engine = config?.engine || REPORT_DATA.engine;
   const testedAt = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 
+  const realSteps: AttackStep[] = (scan?.results ?? []).map((item, index) => ({
+    id:index+1,title:item.attack_name ?? item.name ?? item.attack_id,description:`${item.explanation ?? ''}${item.affected_data ? ` Affected data: ${item.affected_data}.` : ''}`,
+    payload:item.prompt ?? '',result:JSON.stringify({outcome:item.outcome,evidence:item.evidence,execution:item.execution,mitigation:item.recommended_mitigation},null,2),severity:item.outcome==='vulnerable'?'crit':item.outcome==='passed'?'safe':'warn',
+  }));
+  const realCategories: CategoryScore[] = Object.entries((scan?.results ?? []).reduce<Record<string,{total:number;failed:number}>>((acc,item)=>{const category=item.category ?? 'unknown';const c=acc[category]??{total:0,failed:0};c.total++;if(item.outcome==='vulnerable')c.failed++;acc[category]=c;return acc;},{})).map(([name,c])=>({name,score:c.total-c.failed,maxScore:c.total,icon:'ShieldCheck',description:`${c.failed} policy violation(s) observed in ${c.total} test(s).`,level:c.failed?'crit':'safe'}));
+  const score = scan?.total ? Math.max(0,10-(scan.counts.vulnerable/scan.total)*10) : REPORT_DATA.robustnessScore;
   const data = {
     ...REPORT_DATA,
     targetName,
     engine,
     testedAt,
-    summary: `${targetName} exhibits moderate vulnerability to prompt injection and insufficient tool-level authorization. While data protection controls partially mask sensitive fields, the model discloses its system prompt under adversarial role-hijack payloads and processes high-value refunds without amount verification.`,
+    robustnessScore: scan ? score : REPORT_DATA.robustnessScore,
+    categories: scan ? realCategories : REPORT_DATA.categories,
+    attackPath: scan ? realSteps : REPORT_DATA.attackPath,
+    summary: scan ? `${scan.counts.vulnerable} of ${scan.completed} executed sandbox tests produced evidence of a policy violation. ${scan.counts.passed} tests passed; ${scan.counts.inconclusive} were inconclusive.` : REPORT_DATA.summary,
   };
 
   return (
@@ -295,6 +306,18 @@ export default function ReportView({ onBack, onViewDefensive, config }: ReportVi
           </div>
         </motion.div>
 
+        {scan && <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 mb-6">
+          <h3 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">Run configuration</h3>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="bg-slate-950 rounded-lg p-3"><p className="text-zinc-500">Mode</p><p className="text-white mt-1">{scan.scan_mode ?? 'deterministic'}</p></div>
+            <div className="bg-slate-950 rounded-lg p-3"><p className="text-zinc-500">Executed</p><p className="text-white mt-1">{scan.completed} / {scan.total}</p></div>
+            <div className="bg-slate-950 rounded-lg p-3"><p className="text-zinc-500">Generation rounds</p><p className="text-white mt-1">{scan.rounds_completed ?? 0}</p></div>
+            <div className="bg-slate-950 rounded-lg p-3"><p className="text-zinc-500">Stop reason</p><p className="text-white mt-1">{(scan.stop_reason ?? 'unknown').replace(/_/g, ' ')}</p></div>
+          </div>
+          {scan.error && <p className="mt-3 text-sm text-rose-300">Scan error: {scan.error.message || scan.error.type}</p>}
+          {!!scan.findings?.length && <div className="mt-5"><h4 className="text-xs font-semibold text-rose-300 uppercase tracking-wider mb-2">Deduplicated findings</h4><div className="space-y-2">{scan.findings.map((finding, index) => <div key={String(finding.finding_id ?? index)} className="rounded-lg border border-rose-900/60 bg-rose-950/20 p-3"><div className="flex justify-between gap-2"><p className="text-sm text-white">{String(finding.title ?? finding.category ?? 'Finding')}</p><span className="text-xs text-rose-300">{String(finding.severity ?? '')}</span></div><p className="text-xs text-zinc-400 mt-1">{String(finding.description ?? finding.remediation_recommendation ?? '')}</p></div>)}</div></div>}
+        </section>}
+
         {/* Category Breakdown */}
         <div className="mb-6">
           <h3 className="text-sm font-semibold text-white uppercase tracking-wider mb-4">
@@ -307,6 +330,23 @@ export default function ReportView({ onBack, onViewDefensive, config }: ReportVi
           </div>
         </div>
 
+        {scan?.attempts && <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 mb-6">
+          <h3 className="text-sm font-semibold text-white uppercase tracking-wider mb-1">All generated test prompts</h3>
+          <p className="text-xs text-zinc-500 mb-4">Includes tests that ran and candidates rejected by sandbox scope checks. Evaluator output is advisory; the deterministic verdict is authoritative.</p>
+          <div className="space-y-3">{scan.attempts.map((attempt: ScanAttempt, index) => <details key={attempt.attack_id} className="bg-slate-950 border border-zinc-800 rounded-xl p-4">
+            <summary className="cursor-pointer flex flex-wrap items-center justify-between gap-2 text-sm"><span className="text-white">{attempt.name ?? attempt.attack_name ?? attempt.attack_id}</span><span className="text-xs text-zinc-400">{attempt.status ?? attempt.outcome ?? 'recorded'} · {attempt.category ?? 'uncategorized'}</span></summary>
+            <div className="mt-3 space-y-3"><div><p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Prompt</p><pre className="text-xs text-amber-200 whitespace-pre-wrap break-words">{attempt.prompt ?? 'No prompt recorded'}</pre></div>
+              {attempt.rejection_reason && <p className="text-xs text-amber-300">Not executed: {attempt.rejection_reason}</p>}
+              {attempt.verdict && <p className="text-xs text-zinc-300">Deterministic verdict: {attempt.verdict}</p>}
+              {attempt.target_response && <div><p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Target response</p><pre className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{attempt.target_response}</pre></div>}
+              {attempt.evidence && attempt.evidence.length > 0 && <div><p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Recorded evidence</p><pre className="text-xs text-emerald-200 whitespace-pre-wrap break-words">{JSON.stringify(attempt.evidence, null, 2)}</pre></div>}
+              {attempt.assessment && <div><p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Evaluator assessment</p><pre className="text-xs text-cyan-200 whitespace-pre-wrap break-words">{JSON.stringify(attempt.assessment, null, 2)}</pre></div>}
+              {attempt.assessment_error && <p className="text-xs text-amber-300">Evaluator unavailable: {attempt.assessment_error}</p>}
+            </div>
+          </details>)}{scan.attempts.length === 0 && <p className="text-xs text-zinc-500">No prompt attempts were recorded.</p>}</div>
+          {!!scan.llm_usage?.length && <details className="mt-4 text-xs text-zinc-400"><summary className="cursor-pointer">Model usage metadata</summary><pre className="mt-2 whitespace-pre-wrap break-words">{JSON.stringify(scan.llm_usage, null, 2)}</pre></details>}
+        </section>}
+
         {/* Attack Path Timeline */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 mb-6">
           <div className="flex items-center gap-2 mb-1">
@@ -315,8 +355,8 @@ export default function ReportView({ onBack, onViewDefensive, config }: ReportVi
               Attack Path Timeline
             </h3>
           </div>
-          <p className="text-xs text-zinc-500 mb-6">
-            Step-by-step reconstruction of the exploit chain. Click each step to expand details.
+              <p className="text-xs text-zinc-500 mb-6">
+            {scan ? `Run ${scan.run_id} · ${scan.status} · ${scan.completed}/${scan.total} tests. Evidence comes from recorded tool calls and results.` : 'Step-by-step reconstruction of the exploit chain. Click each step to expand details.'}
           </p>
 
           <div>

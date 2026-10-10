@@ -1,48 +1,72 @@
-"""Basic unit test for AgentBreak backend endpoints."""
-
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
+import app.orchestrator.scan_orchestrator as scans
 from app.main import app
 
-client = TestClient(app)
+@pytest.fixture(autouse=True)
+def isolated_db(monkeypatch):
+    test_engine=create_engine("sqlite://",connect_args={"check_same_thread":False},poolclass=StaticPool)
+    monkeypatch.setattr(scans,"engine",test_engine)
+    scans._events.clear()
+    scans._cancelled.clear()
+    scans.ensure_tables()
+    yield
+    test_engine.dispose()
 
+@pytest.fixture
+def client():
+    with TestClient(app) as test_client: yield test_client
 
-def test_health_check():
-    """Verify /api/health endpoint returns status ok."""
-    response = client.get("/api/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "ok"
-    assert data["version"] == "0.1.0"
+def test_health_and_attack_catalog(client):
+    assert client.get('/api/health').json()['status']=='ok'
+    attacks=client.get('/api/attacks').json()
+    assert len(attacks)>=10 and all('prompt' not in a for a in attacks)
 
+def test_scan_executes_and_persists_vulnerable_evidence(client):
+    response=client.post('/api/runs',json={'attack_ids':['canary-record-access'],'vulnerable_mode':True})
+    assert response.status_code==202
+    run_id=response.json()['run_id']
+    scan=client.get(f'/api/runs/{run_id}').json()
+    assert scan['status']=='completed'
+    assert scan['results'][0]['outcome']=='vulnerable'
+    assert 'CUST-CANARY' in str(scan['results'][0]['evidence'])
+    assert client.get('/api/findings',params={'run_id':run_id}).json()
 
-def test_list_runs_initial_empty():
-    """Verify /api/runs initially returns an empty list."""
-    response = client.get("/api/runs")
-    assert response.status_code == 200
-    assert response.json() == []
+def test_secure_mode_blocks_and_invalid_inputs_rejected(client):
+    response=client.post('/api/runs',json={'attack_ids':['canary-record-access']})
+    scan=client.get('/api/runs/'+response.json()['run_id']).json()
+    assert scan['results'][0]['outcome']=='passed'
+    assert client.post('/api/runs',json={'attack_ids':['bad-id']}).status_code==400
+    assert client.post('/api/runs',json={'target_name':'external'}).status_code==400
 
+def test_all_verdicts_and_failure_handling():
+    from app.evaluator.rules import evaluate_execution
+    from app.attack_engine.attack_library import ATTACK_BY_ID
+    attack=ATTACK_BY_ID['direct-instruction-override']
+    assert evaluate_execution(attack,{'execution_status':'completed','tool_calls':[],'tool_results':[],'security_events':[]})['outcome']=='inconclusive'
+    from app.attack_engine.runner import AttackRunner
+    from app.target.agent import TargetAgent
+    class BrokenAgent(TargetAgent):
+        def process_message(self,**kwargs): raise RuntimeError('private detail')
+    result=AttackRunner(BrokenAgent()).execute('canary-record-access')
+    assert result['outcome']=='error' and 'private detail' not in result['explanation']
 
-def test_create_and_get_run():
-    """Verify run creation and retrieval."""
-    post_resp = client.post("/api/runs", json={"target_name": "TestBot", "attack_types": ["prompt_injection"]})
-    assert post_resp.status_code == 201
-    created = post_resp.json()
-    run_id = created["run_id"]
-    assert created["status"] == "pending"
+def test_sse_events_are_available(client):
+    response=client.post('/api/runs',json={'attack_ids':['own-record-baseline']})
+    run_id=response.json()['run_id']
+    events=client.get(f'/api/runs/{run_id}/events')
+    assert events.status_code==200
+    assert 'scan_started' in events.text and 'scan_completed' in events.text
+    assert 'attack_generated' in events.text and 'Show my account record.' in events.text
+    attempts=client.get(f'/api/runs/{run_id}/attacks').json()
+    assert attempts[0]['prompt']=='Show my account record.'
+    assert client.get(f"/api/attacks/{attempts[0]['attack_id']}").json()['prompt']==attempts[0]['prompt']
+    assert client.get(f'/api/runs/{run_id}/report').json()['stop_reason']=='selected_tests_completed'
 
-    get_resp = client.get(f"/api/runs/{run_id}")
-    assert get_resp.status_code == 200
-    assert get_resp.json()["run_id"] == run_id
-
-
-def test_get_run_404():
-    """Verify unknown run returns 404."""
-    response = client.get("/api/runs/nonexistent_run_id")
-    assert response.status_code == 404
-
-
-def test_list_findings_initial_empty():
-    """Verify /api/findings returns an empty list initially."""
-    response = client.get("/api/findings")
-    assert response.status_code == 200
-    assert response.json() == []
+def test_adaptive_scan_requires_configured_free_model(client,monkeypatch):
+    from app.llm.gemini import GeminiClient
+    monkeypatch.setattr(GeminiClient,'is_configured',staticmethod(lambda:False))
+    response=client.post('/api/runs',json={'scan_mode':'adaptive'})
+    assert response.status_code==503 and 'AGENTBREAK_LLM_API_KEY' in response.json()['detail']

@@ -1,132 +1,104 @@
-"""REST API route definitions for AgentBreak."""
-
-import uuid
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, status
+"""FastAPI routes for sandbox scans, findings, and direct target inspection."""
+import asyncio, json
+from typing import List, Optional
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-
+from app.attack_engine.attack_library import ATTACKS, ATTACK_BY_ID
+from app.orchestrator.scan_orchestrator import create_scan, execute_scan, get_scan, list_scans, list_findings, events_for, cancel_scan, attacks_for_run, attack_detail, scan_report
 from app.target.agent import TargetAgent, VulnerabilityConfig, AgentExecutionResult
+from app.llm.gemini import GeminiClient
 
-router = APIRouter()
-
-# In-memory store for initial prototype scaffolding
-_RUNS_STORE: Dict[str, Dict[str, Any]] = {}
-_FINDINGS_STORE: List[Dict[str, Any]] = []
-
-# Shared TargetAgent instance
-target_agent = TargetAgent()
-
-
-# ---------------------------------------------------------------------------
-# Request and Response Schemas
-# ---------------------------------------------------------------------------
+router=APIRouter(); target_agent=TargetAgent()
 
 class HealthResponse(BaseModel):
-    status: str = Field(..., example="ok")
-    version: str = Field(..., example="0.1.0")
-    message: str = Field(..., example="AgentBreak backend is running")
-
-
+    status:str; version:str; message:str
 class CreateRunRequest(BaseModel):
-    target_name: Optional[str] = Field("DefaultTarget", description="Name/ID of target agent")
-    attack_types: Optional[List[str]] = Field(
-        default_factory=lambda: ["prompt_injection"],
-        description="List of attacks to test",
-    )
-
-
-class RunResponse(BaseModel):
-    run_id: str
-    target_name: str
-    attack_types: List[str]
-    status: str
-    created_at: str
-    message: str
-
-
-class FindingResponse(BaseModel):
-    finding_id: str
-    run_id: str
-    rule_id: str
-    severity: str
-    description: str
-
-
+    target_name:str=Field(default="CustomerSupportAgent",max_length=80)
+    attack_ids:Optional[List[str]]=None
+    max_tests:int=Field(default=30,ge=1,le=30)
+    max_rounds:int=Field(default=5,ge=1,le=5)
+    timeout_seconds:int=Field(default=180,ge=10,le=180)
+    scan_mode:str=Field(default="deterministic",pattern="^(adaptive|deterministic)$")
+    vulnerable_mode:bool=False
 class TargetTestRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=2000, description="Input prompt or message for the target agent")
-    user_id: str = Field(..., min_length=1, max_length=50, description="Simulated authenticated customer ID (e.g. CUST-001)")
-    vulnerability_config: Optional[VulnerabilityConfig] = Field(
-        default=None,
-        description="Optional flags enabling specific isolated vulnerability modes",
-    )
+    message:str=Field(...,min_length=1,max_length=2000)
+    user_id:str=Field(...,min_length=1,max_length=50)
+    vulnerability_config:Optional[VulnerabilityConfig]=None
 
+@router.get("/health",response_model=HealthResponse)
+def health(): return {"status":"ok","version":"0.1.0","message":"AgentBreak backend is running"}
 
-# ---------------------------------------------------------------------------
-# Route Handlers
-# ---------------------------------------------------------------------------
+@router.get("/attacks")
+def attacks(): return [{k:v for k,v in a.items() if k!="prompt"} for a in ATTACKS]
 
-@router.get("/health", response_model=HealthResponse, tags=["Health"])
-def get_health() -> Dict[str, str]:
-    """Return backend operational status."""
-    return {
-        "status": "ok",
-        "version": "0.1.0",
-        "message": "AgentBreak backend is running",
-    }
+@router.post("/runs",status_code=status.HTTP_202_ACCEPTED)
+def start_run(payload:CreateRunRequest, background:BackgroundTasks):
+    if payload.scan_mode=="adaptive" and not GeminiClient.is_configured():
+        raise HTTPException(status_code=503,detail="Adaptive scans require AGENTBREAK_LLM_API_KEY in backend/.env; deterministic scans remain available without credentials.")
+    try: scan=create_scan(payload.attack_ids,payload.max_tests,payload.vulnerable_mode,payload.target_name,payload.max_rounds,payload.timeout_seconds,payload.scan_mode)
+    except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc))
+    background.add_task(execute_scan,scan["run_id"])
+    return {"run_id":scan["run_id"],"target_name":scan["target_name"],"attack_ids":scan["attack_ids"],"status":scan["status"],"created_at":scan["created_at"],"message":"Scan accepted; execution is running in the background."}
 
+@router.get("/runs")
+def runs(): return list_scans()
 
-@router.post("/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED, tags=["Runs"])
-def create_run(payload: CreateRunRequest) -> Dict[str, Any]:
-    """Accept a security test run request and return a placeholder run ID and pending status.
+@router.get("/runs/{run_id}")
+def run(run_id:str):
+    scan=get_scan(run_id)
+    if not scan: raise HTTPException(status_code=404,detail="Run not found")
+    return scan
 
-    Note: This is initial scaffolding; no security attack execution is triggered yet.
-    """
-    run_id = f"run_{uuid.uuid4().hex[:8]}"
-    run_record = {
-        "run_id": run_id,
-        "target_name": payload.target_name or "DefaultTarget",
-        "attack_types": payload.attack_types or ["prompt_injection"],
-        "status": "pending",
-        "created_at": "2026-10-10T00:00:00Z",
-        "message": "Test run request accepted. Execution engine integration pending.",
-    }
-    _RUNS_STORE[run_id] = run_record
-    return run_record
+@router.get("/runs/{run_id}/attacks")
+def run_attacks(run_id:str):
+    if not get_scan(run_id): raise HTTPException(status_code=404,detail="Run not found")
+    return attacks_for_run(run_id)
 
+@router.get("/runs/{run_id}/report")
+def run_report(run_id:str):
+    report=scan_report(run_id)
+    if not report: raise HTTPException(status_code=404,detail="Run not found")
+    return report
 
-@router.get("/runs", response_model=List[RunResponse], tags=["Runs"])
-def list_runs() -> List[Dict[str, Any]]:
-    """Return list of existing test runs (initially empty)."""
-    return list(_RUNS_STORE.values())
+@router.post("/runs/{run_id}/cancel")
+def stop_run(run_id:str):
+    scan=cancel_scan(run_id)
+    if not scan: raise HTTPException(status_code=404,detail="Run not found")
+    if scan["status"] not in {"completed","failed","cancelled","timed_out"}:
+        from app.orchestrator.scan_orchestrator import emit
+        emit(run_id,"scan_cancel_requested",reason="user_requested")
+        return {"run_id":run_id,"status":"cancellation_requested"}
+    return {"run_id":run_id,"status":scan["status"]}
 
+@router.get("/runs/{run_id}/events")
+async def run_events(run_id:str):
+    if not get_scan(run_id): raise HTTPException(status_code=404,detail="Run not found")
+    async def stream():
+        sent=0
+        while True:
+            events=events_for(run_id)
+            while sent<len(events):
+                event=events[sent]; sent+=1
+                yield f"event: {event['event']}\ndata: {json.dumps(event)}\n\n"
+            scan=get_scan(run_id)
+            if scan and scan["status"] in {"completed","failed","cancelled","timed_out"} and sent>=len(events): break
+            await asyncio.sleep(0.35)
+    return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
-@router.get("/runs/{run_id}", response_model=RunResponse, tags=["Runs"])
-def get_run(run_id: str) -> Dict[str, Any]:
-    """Return specific test run details or HTTP 404 if not found."""
-    if run_id not in _RUNS_STORE:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Run with ID '{run_id}' not found",
-        )
-    return _RUNS_STORE[run_id]
+@router.get("/attacks/{attack_id}")
+def get_attack(attack_id:str):
+    stored=attack_detail(attack_id)
+    if stored: return stored
+    template=ATTACK_BY_ID.get(attack_id)
+    if template: return template
+    raise HTTPException(status_code=404,detail="Attack not found")
 
+@router.get("/findings")
+def findings(severity:Optional[str]=None,category:Optional[str]=None,run_id:Optional[str]=None,status:Optional[str]=None):
+    results=list_findings(severity,category,run_id)
+    return [item for item in results if not status or item.get("reproducibility_status")==status]
 
-@router.get("/findings", response_model=List[FindingResponse], tags=["Findings"])
-def list_findings() -> List[Dict[str, Any]]:
-    """Return security evaluation findings (initially empty)."""
-    return _FINDINGS_STORE
-
-
-@router.post("/target/test", response_model=AgentExecutionResult, tags=["Target Agent"])
-def test_target_agent(payload: TargetTestRequest) -> AgentExecutionResult:
-    """Execute a prompt against the sandboxed target customer-support agent.
-
-    Accepts an input message, a synthetic user ID context, and optional vulnerability flags.
-    Returns structured execution traces including tool calls, results, and security events.
-    """
-    result = target_agent.process_message(
-        message=payload.message,
-        authenticated_user_id=payload.user_id,
-        vuln_config=payload.vulnerability_config,
-    )
-    return result
+@router.post("/target/test",response_model=AgentExecutionResult)
+def test_target_agent(payload:TargetTestRequest):
+    return target_agent.process_message(message=payload.message,authenticated_user_id=payload.user_id,vuln_config=payload.vulnerability_config)

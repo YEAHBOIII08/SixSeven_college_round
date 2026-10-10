@@ -197,7 +197,34 @@ class TargetAgent:
                     )
 
         # -------------------------------------------------------------------
-        # 2. Intent: Customer Record / Account Profile Lookup
+        # 2. Intent: Refund Request
+        # -------------------------------------------------------------------
+        elif "refund" in lower_msg:
+            amount_match = re.search(r"\$?\s*(\d+(?:\.\d+)?)", normalized_msg)
+            amount = float(amount_match.group(1)) if amount_match else 20.0
+
+            # Check if another customer is targeted for refund
+            target_cust_match = re.search(r"\b(CUST-[A-Z0-9\-]+)\b", normalized_msg, re.IGNORECASE)
+            target_cust = target_cust_match.group(1).upper() if target_cust_match else authenticated_user_id
+
+            tool_res = self.tools.request_refund(
+                customer_id=target_cust,
+                amount=amount,
+                reason="Customer automated support request",
+                actor_id=authenticated_user_id,
+                bypass_auth=config.allow_unauthorized_record_access,
+            )
+
+            if tool_res.get("success"):
+                target_response = (
+                    f"Refund simulation completed: ${amount:.2f} credited to {target_cust}. "
+                    f"Reference: {tool_res.get('refund_reference')}"
+                )
+            else:
+                target_response = f"Refund request could not be processed: {tool_res.get('message')}"
+
+        # -------------------------------------------------------------------
+        # 3. Intent: Customer Record / Account Profile Lookup
         # -------------------------------------------------------------------
         elif "account" in lower_msg or "record" in lower_msg or "profile" in lower_msg or "cust-" in lower_msg:
             # Check if specific customer ID mentioned
@@ -254,33 +281,6 @@ class TargetAgent:
                 )
             else:
                 target_response = f"Cannot access customer record: {tool_res.get('message')}"
-
-        # -------------------------------------------------------------------
-        # 3. Intent: Refund Request
-        # -------------------------------------------------------------------
-        elif "refund" in lower_msg:
-            amount_match = re.search(r"\$?(\d+(\.\d+)?)", normalized_msg)
-            amount = float(amount_match.group(1)) if amount_match else 20.0
-            
-            # Check if another customer is targeted for refund
-            target_cust_match = re.search(r"\b(CUST-[A-Z0-9\-]+)\b", normalized_msg, re.IGNORECASE)
-            target_cust = target_cust_match.group(1).upper() if target_cust_match else authenticated_user_id
-
-            tool_res = self.tools.request_refund(
-                customer_id=target_cust,
-                amount=amount,
-                reason="Customer automated support request",
-                actor_id=authenticated_user_id,
-                bypass_auth=config.allow_unauthorized_record_access,
-            )
-
-            if tool_res.get("success"):
-                target_response = (
-                    f"Refund simulation completed: ${amount:.2f} credited to {target_cust}. "
-                    f"Reference: {tool_res.get('refund_reference')}"
-                )
-            else:
-                target_response = f"Refund request could not be processed: {tool_res.get('message')}"
 
         # -------------------------------------------------------------------
         # 4. Direct / Default Conversational Response

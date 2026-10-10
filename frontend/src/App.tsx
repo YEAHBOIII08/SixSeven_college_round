@@ -7,12 +7,14 @@ import ExecutionHUD from './views/ExecutionHUD';
 import ReportView from './views/ReportView';
 import DefensiveMeasures from './views/DefensiveMeasures';
 import type { PreviousModel, TargetConfig, View } from './types';
+import type { Scan } from './views/ExecutionHUD';
 
 export default function App() {
   const [view, setView] = useState<View>('login');
   const [config, setConfig] = useState<TargetConfig | null>(null);
   const [presetModel, setPresetModel] = useState<PreviousModel | null>(null);
   const [testedModels, setTestedModels] = useState<PreviousModel[]>([]);
+  const [scan, setScan] = useState<Scan | null>(null);
 
   function goTo(v: View) {
     setView(v);
@@ -25,6 +27,12 @@ export default function App() {
   function handleCheckNewModel() {
     setPresetModel(null);
     setConfig(null);
+    goTo('target-setup');
+  }
+
+  function handleTestAgent() {
+    setPresetModel(null);
+    setConfig({ name: 'CustomerSupportAgent', engine: 'Sandboxed deterministic agent', systemPrompt: '', mockTools: {}, vulnerableMode: false });
     goTo('target-setup');
   }
 
@@ -49,15 +57,17 @@ export default function App() {
     goTo('execution');
   }
 
-  function handleExecutionComplete() {
+  function handleExecutionComplete(result: Scan) {
+    setScan(result);
     if (config) {
+      const vulnerable = result.counts.vulnerable > 0;
       const newModel: PreviousModel = {
-        id: `mdl-${Date.now()}`,
+        id: result.run_id,
         name: config.name,
         engine: config.engine,
         lastTested: new Date().toISOString().split('T')[0],
-        score: 7.0,
-        status: 'warn',
+        score: Math.max(0, 10 - (result.counts.vulnerable / Math.max(result.total, 1)) * 10),
+        status: vulnerable ? 'crit' : 'safe',
       };
       setTestedModels((prev) => [newModel, ...prev.filter((m) => m.name !== config.name)]);
     }
@@ -79,6 +89,7 @@ export default function App() {
           <Dashboard
             onCheckNewModel={handleCheckNewModel}
             onRetestModel={handleRetestModel}
+            onTestAgent={handleTestAgent}
             models={testedModels}
           />
         )}
@@ -106,6 +117,7 @@ export default function App() {
             onBack={() => goTo('execution')}
             onViewDefensive={() => goTo('defensive')}
             config={config}
+            scan={scan}
           />
         )}
 

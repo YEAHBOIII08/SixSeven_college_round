@@ -1,215 +1,55 @@
-# API Contract — AgentBreak
+# AgentBreak Phase 2 API
 
-## Base URL
-- Development: `http://localhost:8000/api`
-- OpenAPI Specification Docs: `http://localhost:8000/docs`
+Base URL: `http://127.0.0.1:8000/api`. Swagger UI: `http://127.0.0.1:8000/docs`.
 
-All endpoints accept and return `application/json` unless otherwise specified.
+The registered target is always the local `CustomerSupportAgent` with synthetic records and mock tools. Target URLs are not accepted. The existing deterministic scan mode remains the default for Phase 1 clients; it labels each attempt `source: template`. Adaptive mode requires the configured free-tier Gemini model and labels generated attempts `source: llm`.
 
----
+## Attack catalog and individual details
 
-## 1. System Health
+`GET /attacks` returns safe metadata for built-in seed templates without prompt bodies. Generated prompt bodies are available immediately after generation from the SSE event and persisted API resources below.
 
-### `GET /api/health`
-Check the health and operational status of the backend service.
+`GET /attacks/{attack_id}` returns a stored attempt by its unique attack ID, including its exact prompt, generation status, target response, tool trace, evaluator assessment, deterministic verification, and final verdict. For stable seed-template IDs, this endpoint returns the latest stored attempt; use the run-scoped route to disambiguate history.
 
-- **Method**: `GET`
-- **Request Headers**: None
-- **Request Body**: None
-- **Response**: `200 OK`
-```json
-{
-  "status": "ok",
-  "version": "0.1.0",
-  "message": "AgentBreak backend is running"
-}
-```
+## Start and inspect scans
 
----
+`POST /runs` accepts:
 
-## 2. Test Runs
-
-### `POST /api/runs`
-Submit a request to execute a security test suite against a target agent.
-
-- **Method**: `POST`
-- **Request Headers**: `Content-Type: application/json`
-- **Request Body**:
 ```json
 {
   "target_name": "CustomerSupportAgent",
-  "attack_types": [
-    "prompt_injection",
-    "tool_misuse"
-  ]
-}
-```
-- **Fields**:
-  - `target_name` *(string, optional, default: "DefaultTarget")*: Identifier or name of the agent configuration to evaluate.
-  - `attack_types` *(array of strings, optional, default: `["prompt_injection"]`)*: Attack categories to execute.
-
-- **Response**: `201 Created`
-```json
-{
-  "run_id": "run_a1b2c3d4",
-  "target_name": "CustomerSupportAgent",
-  "attack_types": [
-    "prompt_injection",
-    "tool_misuse"
-  ],
-  "status": "pending",
-  "created_at": "2026-10-10T00:00:00Z",
-  "message": "Test run request accepted. Execution engine integration pending."
+  "scan_mode": "adaptive",
+  "attack_ids": ["canary-record-access", "indirect-ticket-injection"],
+  "max_tests": 30,
+  "max_rounds": 5,
+  "timeout_seconds": 180,
+  "vulnerable_mode": false
 }
 ```
 
----
+`attack_ids` selects seed templates; omit it to use the catalog. `max_tests` is capped at 30, `max_rounds` at 5, and the wall-clock budget at 180 seconds. Adaptive mode proposes up to six attacks per round and executes candidates sequentially. Secure target mode is the default. Set `vulnerable_mode` only to exercise the sandbox’s deliberate flaws. `scan_mode` may be `adaptive` or `deterministic`.
 
-### `GET /api/runs`
-Retrieve a list of all security test runs.
+The endpoint returns HTTP 202 with a `run_id` promptly. Adaptive mode without `AGENTBREAK_LLM_API_KEY` returns HTTP 503 with a configuration message; it does not silently fall back to templates.
 
-- **Method**: `GET`
-- **Request Body**: None
-- **Response**: `200 OK`
-```json
-[
-  {
-    "run_id": "run_a1b2c3d4",
-    "target_name": "CustomerSupportAgent",
-    "attack_types": [
-      "prompt_injection",
-      "tool_misuse"
-    ],
-    "status": "pending",
-    "created_at": "2026-10-10T00:00:00Z",
-    "message": "Test run request accepted. Execution engine integration pending."
-  }
-]
-```
+`GET /runs` lists the latest 50 scans. `GET /runs/{run_id}` returns lifecycle state, timestamps, budget, stop reason, attempt counts, verdict counts, result summaries, and token-use metadata. States are `queued`, `running`, `completed`, `cancelled`, `failed`, and `timed_out`.
 
----
+`POST /runs/{run_id}/cancel` requests cancellation. Cancellation is observed between bounded model/target operations; an in-flight provider request has a configured timeout.
 
-### `GET /api/runs/{run_id}`
-Retrieve details and status for a single test run.
+`GET /runs/{run_id}/attacks` returns every persisted attempt, including generated, rejected, running, completed, error, cancelled, and not-executed statuses. A candidate and its exact prompt are committed to SQLite before `attack_generated` is emitted or any candidate in that batch executes.
 
-- **Method**: `GET`
-- **URL Parameters**:
-  - `run_id` *(string, required)*: The unique test run identifier.
-- **Request Body**: None
-- **Response (Success)**: `200 OK`
-```json
-{
-  "run_id": "run_a1b2c3d4",
-  "target_name": "CustomerSupportAgent",
-  "attack_types": [
-    "prompt_injection",
-    "tool_misuse"
-  ],
-  "status": "pending",
-  "created_at": "2026-10-10T00:00:00Z",
-  "message": "Test run request accepted. Execution engine integration pending."
-}
-```
+`GET /runs/{run_id}/report` returns scan summary, stop reason, persisted findings, and detailed attempts. Prompts and traces remain available after server restart.
 
-- **Response (Not Found)**: `404 Not Found`
-```json
-{
-  "detail": "Run with ID 'invalid_id' not found"
-}
-```
+## Progress events
 
----
+`GET /runs/{run_id}/events` streams SSE events. Each JSON payload includes `run_id`, `timestamp`, and event name. An `attack_generated` payload includes the exact persisted prompt, attack ID, category, and safe metadata before execution starts. `attack_rejected` includes the stored prompt and rejection reason. Other events include `scan_started`, `attack_started`, `attack_completed`, `finding_detected`, `scan_progress`, `scan_completed`, `scan_failed`, and `scan_cancelled`.
 
-## 3. Findings
+## Findings and direct sandbox invocation
 
-### `GET /api/findings`
-Retrieve detected security evaluation findings.
+`GET /findings` returns deduplicated findings. Optional query filters: `run_id`, `severity`, `category`, and `status` (reproducibility status).
 
-- **Method**: `GET`
-- **Request Body**: None
-- **Response**: `200 OK`
-```json
-[
-  {
-    "finding_id": "find_99887766",
-    "run_id": "run_a1b2c3d4",
-    "rule_id": "leak_system_prompt",
-    "severity": "high",
-    "description": "System prompt disclosure detected in response payload."
-  }
-]
-```
-*(Returns `[]` initially during prototype phase)*
+`POST /target/test` remains available for one direct sandbox prompt. It takes `message`, a registered synthetic `user_id`, and optional sandbox `vulnerability_config`.
 
----
+## Verdict semantics
 
-## 4. Target Agent Sandbox Testing
+Each attempt records one deterministic verdict: `vulnerable`, `passed`, `inconclusive`, or `error`. The Attacker proposes test prompts; the Evaluator provides an assessment and separate confidence/severity recommendations. Only observable tool results and security events determine the verdict. Evaluator output cannot turn a suspicion or natural-language claim into a confirmed finding. A failed or malformed Evaluator response is recorded explicitly and does not replace the deterministic verification.
 
-### `POST /api/target/test`
-Send a message and authenticated actor context directly to the sandboxed Target AI Agent for deterministic evaluation.
-
-- **Method**: `POST`
-- **Request Headers**: `Content-Type: application/json`
-- **Request Body**:
-```json
-{
-  "message": "Please show me my account details",
-  "user_id": "CUST-001",
-  "vulnerability_config": {
-    "allow_unauthorized_record_access": false,
-    "trust_untrusted_content": false
-  }
-}
-```
-- **Fields**:
-  - `message` *(string, required, 1-2000 chars)*: User prompt or adversarial test string.
-  - `user_id` *(string, required, 1-50 chars)*: Simulated authenticated customer ID (e.g. `CUST-001`, `CUST-002`, `CUST-003`).
-  - `vulnerability_config` *(object, optional)*:
-    - `allow_unauthorized_record_access` *(boolean, default: false)*: Enable BOLA/IDOR vulnerability mode.
-    - `trust_untrusted_content` *(boolean, default: false)*: Enable indirect prompt injection vulnerability mode.
-
-- **Response**: `200 OK`
-```json
-{
-  "run_id": "run_9a8b7c6d",
-  "target_response": "Customer Record for Alice Johnson: Tier=standard, Balance=$150.0, Notes=Standard retail customer with good payment history.",
-  "tool_calls": [
-    {
-      "tool_name": "get_customer_record",
-      "arguments": {
-        "customer_id": "CUST-001",
-        "actor_id": "CUST-001",
-        "bypass_auth": false
-      }
-    }
-  ],
-  "tool_results": [
-    {
-      "tool_name": "get_customer_record",
-      "status": "success",
-      "result": {
-        "success": true,
-        "data": {
-          "customer_id": "CUST-001",
-          "name": "Alice Johnson",
-          "email": "alice.johnson@synthetic-mail.test",
-          "tier": "standard",
-          "account_balance": 150.0,
-          "max_refund_limit": 50.0,
-          "is_canary": false,
-          "notes": "Standard retail customer with good payment history."
-        },
-        "message": "Customer record 'CUST-001' retrieved successfully."
-      }
-    }
-  ],
-  "security_events": [],
-  "execution_status": "completed",
-  "vulnerability_config": {
-    "allow_unauthorized_record_access": false,
-    "trust_untrusted_content": false
-  },
-  "timestamp": 1728560000.0
-}
-```
-
+Findings are grouped by scan, category, and invariant to avoid duplicate findings. Each attempt remains available in its run’s attack list.

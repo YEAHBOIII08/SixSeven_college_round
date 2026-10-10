@@ -1,39 +1,43 @@
-"""Attack execution engine module.
+"""Executes a catalog item against the one registered in-process sandbox."""
+from typing import Any, Dict
+from app.attack_engine.attack_library import ATTACK_BY_ID
+from app.evaluator.rules import evaluate_execution
+from app.target.agent import TargetAgent, VulnerabilityConfig
 
-Provides a placeholder runner responsible for orchestrating attack suites,
-dispatching adversarial prompts, and recording raw execution traces.
-"""
-
-import uuid
-from typing import Any, Dict, List
-from app.target.agent import TargetAgent
-
+REGISTERED_TARGET = "CustomerSupportAgent"
 
 class AttackRunner:
-    """Placeholder orchestrator for dispatching adversarial test suites."""
-
-    def __init__(self, target_agent: TargetAgent) -> None:
-        """Initialize the attack runner with a specific target agent.
-
-        Args:
-            target_agent: Target agent instance to evaluate.
-        """
+    def __init__(self, target_agent: TargetAgent):
         self.target_agent = target_agent
 
-    def trigger_test_run(self, attack_types: List[str]) -> Dict[str, Any]:
-        """Trigger an adversarial attack test run against the target agent.
+    def execute(self, attack_id: str, target_name: str = REGISTERED_TARGET, vulnerable: bool = False) -> Dict[str, Any]:
+        attack = ATTACK_BY_ID.get(attack_id)
+        if attack is None:
+            raise ValueError("Unknown attack ID")
+        if target_name != REGISTERED_TARGET or self.target_agent.name != REGISTERED_TARGET:
+            raise ValueError("Target is not registered in the local sandbox")
+        return self.execute_candidate(attack, target_name, vulnerable)
 
-        Args:
-            attack_types: List of attack identifiers (e.g. prompt_injection, privilege_escalation).
-
-        Returns:
-            Placeholder summary of the scheduled or completed run.
-        """
-        run_id = f"run_{uuid.uuid4().hex[:8]}"
-        return {
-            "run_id": run_id,
-            "status": "pending",
-            "attack_types": attack_types,
-            "target": self.target_agent.name,
-            "message": "Attack run registered. Real security execution engine will execute test suite in later phases.",
-        }
+    def execute_candidate(self, attack: Dict[str, Any], target_name: str = REGISTERED_TARGET, vulnerable: bool = False) -> Dict[str, Any]:
+        """Execute the supplied persisted candidate verbatim inside the local target."""
+        if target_name != REGISTERED_TARGET or self.target_agent.name != REGISTERED_TARGET:
+            raise ValueError("Target is not registered in the local sandbox")
+        context = attack.get("target_context", {"user_id": "CUST-001"})
+        config = VulnerabilityConfig(
+            allow_unauthorized_record_access=vulnerable,
+            trust_untrusted_content=vulnerable,
+        )
+        try:
+            execution = self.target_agent.process_message(
+                message=attack["prompt"], authenticated_user_id=context["user_id"], vuln_config=config
+            ).model_dump(mode="json")
+            result = evaluate_execution(attack, execution)
+            return {"attack_id": attack["attack_id"], "attack_name": attack["name"], "category": attack["category"],
+                    "prompt": attack["prompt"], "severity": attack["severity"], "execution": execution,
+                    **result}
+        except Exception as exc:
+            return {"attack_id": attack["attack_id"], "attack_name": attack["name"], "category": attack["category"],
+                    "prompt": attack["prompt"], "severity": attack["severity"], "outcome": "error",
+                    "rule_id": attack["security_invariant"], "evidence": [],
+                    "explanation": f"Target execution failed ({type(exc).__name__}).", "affected_tool": None,
+                    "affected_data": None, "recommended_mitigation": "Review target execution logs."}

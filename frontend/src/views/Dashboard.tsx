@@ -18,12 +18,14 @@ import type { PreviousModel } from '../types';
 interface DashboardProps {
   onCheckNewModel: () => void;
   onRetestModel: (model?: PreviousModel) => void;
+  onTestAgent: () => void;
   models?: PreviousModel[];
 }
 
 export default function Dashboard({
   onCheckNewModel,
   onRetestModel,
+  onTestAgent,
   models = PREVIOUS_MODELS,
 }: DashboardProps) {
   const modelList = models ?? [];
@@ -84,6 +86,7 @@ export default function Dashboard({
           <p className="text-zinc-500 text-sm">
             Select an operation to begin a security evaluation on your AI agent.
           </p>
+          <button onClick={onTestAgent} className="mt-4 inline-flex items-center gap-2 rounded-lg bg-cyan-700 hover:bg-cyan-600 px-4 py-2.5 text-sm font-medium text-white"><Zap className="w-4 h-4" />Test Agent</button>
         </motion.div>
 
         {/* Stats */}

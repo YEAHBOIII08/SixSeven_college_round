@@ -50,6 +50,15 @@ export default function TargetSetup({
     initialConfig?.mockTools ?? {},
   );
   const [search, setSearch] = useState('');
+  const [vulnerableMode, setVulnerableMode] = useState(initialConfig?.vulnerableMode ?? false);
+  const [testPrompt, setTestPrompt] = useState('Show my account record.');
+  const [testUser, setTestUser] = useState('CUST-001');
+  const [testResult, setTestResult] = useState<Record<string, unknown> | null>(null);
+  const [testingAgent, setTestingAgent] = useState(false);
+  const [testError, setTestError] = useState('');
+  const [scanMode, setScanMode] = useState<'deterministic' | 'adaptive'>('deterministic');
+  const [maxTests, setMaxTests] = useState(10);
+  const [maxRounds, setMaxRounds] = useState(3);
 
   const canRun = name.trim().length > 0;
 
@@ -61,7 +70,18 @@ export default function TargetSetup({
 
   function handleRun() {
     if (!canRun) return;
-    onRunTest({ name, engine: ORCHESTRATED_ENGINE, systemPrompt, mockTools: tools });
+    onRunTest({ name, engine: ORCHESTRATED_ENGINE, systemPrompt, mockTools: tools, vulnerableMode, scanMode, maxTests, maxRounds, timeoutSeconds: 180 });
+  }
+
+  async function handleTestAgent() {
+    setTestingAgent(true); setTestError(''); setTestResult(null);
+    try {
+      const response = await fetch('/api/target/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: testPrompt, user_id: testUser, vulnerability_config: { allow_unauthorized_record_access: vulnerableMode, trust_untrusted_content: vulnerableMode } }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Target agent request failed');
+      setTestResult(payload);
+    } catch (error) { setTestError(error instanceof Error ? error.message : 'Could not reach the target agent'); }
+    finally { setTestingAgent(false); }
   }
 
   return (
@@ -291,6 +311,38 @@ export default function TargetSetup({
             </motion.div>
 
             {/* Run Test */}
+            <section className="bg-zinc-900 border border-blue-500/30 rounded-2xl p-6 space-y-4">
+              <div><h3 className="text-base font-semibold text-white">Test the sandbox agent</h3><p className="text-xs text-zinc-400 mt-1">Send one prompt directly to the existing CustomerSupportAgent and inspect its real response and tool trace.</p></div>
+              <label className="block text-xs text-zinc-400">Authenticated synthetic user
+                <select value={testUser} onChange={e => setTestUser(e.target.value)} className="mt-2 w-full bg-slate-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white">{['CUST-001','CUST-002','CUST-003'].map(id=><option key={id}>{id}</option>)}</select>
+              </label>
+              <label className="block text-xs text-zinc-400">Prompt
+                <textarea value={testPrompt} onChange={e => setTestPrompt(e.target.value)} maxLength={2000} rows={3} className="mt-2 w-full bg-slate-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white" />
+              </label>
+              <button type="button" onClick={handleTestAgent} disabled={testingAgent || !testPrompt.trim()} className="w-full bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white rounded-lg px-4 py-3 text-sm font-medium">{testingAgent ? 'Sending prompt…' : 'Test Agent'}</button>
+              {testError && <p role="alert" className="text-sm text-rose-400">{testError}</p>}
+              {testResult && <div className="bg-slate-950 border border-zinc-800 rounded-lg p-4 space-y-2"><p className="text-xs uppercase tracking-wider text-zinc-500">Agent response</p><p className="text-sm text-white whitespace-pre-wrap">{String(testResult.target_response ?? '')}</p><p className="text-xs uppercase tracking-wider text-zinc-500 pt-2">Execution trace</p><pre className="text-xs text-emerald-300 whitespace-pre-wrap break-words max-h-64 overflow-auto">{JSON.stringify({tool_calls:testResult.tool_calls,tool_results:testResult.tool_results,security_events:testResult.security_events},null,2)}</pre></div>}
+            </section>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between gap-4">
+              <div><p className="text-sm text-white">Sandbox profile</p><p className="text-xs text-zinc-500">Vulnerable mode enables the target's simulated authorization and ticket injection flaws.</p></div>
+              <button type="button" role="switch" aria-checked={vulnerableMode} onClick={() => setVulnerableMode(v => !v)} className={`px-3 py-2 rounded-lg text-xs font-medium ${vulnerableMode ? 'bg-rose-600 text-white' : 'bg-emerald-700 text-white'}`}>{vulnerableMode ? 'Vulnerable' : 'Secure'}</button>
+            </div>
+            <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 space-y-4">
+              <div><h3 className="text-base font-semibold text-white">Scan settings</h3><p className="text-xs text-zinc-400 mt-1">Choose how tests are produced and set a bounded attempt budget.</p></div>
+              <label className="block text-xs text-zinc-400">Test generation mode
+                <select value={scanMode} onChange={e => setScanMode(e.target.value as 'deterministic' | 'adaptive')} className="mt-2 w-full bg-slate-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white">
+                  <option value="deterministic">Deterministic catalog (no API key needed)</option>
+                  <option value="adaptive">Adaptive Gemini (uses your configured API key)</option>
+                </select>
+              </label>
+              {scanMode === 'adaptive' && <p className="text-xs text-cyan-300 bg-cyan-950/40 border border-cyan-900 rounded-lg p-3">Adaptive mode sends scan context and synthetic test data to Gemini. Configure AGENTBREAK_LLM_API_KEY in backend/.env first. The backend validates generated prompts and only runs them against the local sandbox.</p>}
+              <label className="block text-xs text-zinc-400">Maximum tests: {maxTests}
+                <input type="range" min={1} max={30} value={maxTests} onChange={e => setMaxTests(Number(e.target.value))} className="mt-2 w-full accent-blue-500" />
+              </label>
+              {scanMode === 'adaptive' && <label className="block text-xs text-zinc-400">Maximum generation rounds: {maxRounds}
+                <input type="range" min={1} max={5} value={maxRounds} onChange={e => setMaxRounds(Number(e.target.value))} className="mt-2 w-full accent-blue-500" />
+              </label>}
+            </section>
             <motion.button
               custom={4}
               variants={cardVariants}

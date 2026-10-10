@@ -82,4 +82,9 @@ export interface TargetConfig {
   engine: string;
   systemPrompt: string;
   mockTools: Record<string, boolean>;
+  vulnerableMode?: boolean;
+  scanMode?: 'deterministic' | 'adaptive';
+  maxTests?: number;
+  maxRounds?: number;
+  timeoutSeconds?: number;
 }
