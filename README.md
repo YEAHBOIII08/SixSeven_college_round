@@ -29,13 +29,15 @@ agentbreak/
 │   │   ├── main.py              # FastAPI application & route registration
 │   │   ├── api/
 │   │   │   ├── __init__.py
-│   │   │   └── routes.py        # REST endpoints (/api/health, /runs, /findings)
+│   │   │   └── routes.py        # REST endpoints (/health, /runs, /findings, /target/test)
 │   │   ├── core/
 │   │   │   ├── __init__.py
 │   │   │   └── config.py        # Pydantic environment configuration
 │   │   ├── target/
 │   │   │   ├── __init__.py
-│   │   │   └── agent.py         # Sandboxed mock target agent placeholder
+│   │   │   ├── agent.py         # Sandboxed Target AI Agent (Customer Support)
+│   │   │   ├── tools.py         # Mock tools (get_customer_record, get_support_ticket, request_refund)
+│   │   │   └── synthetic_data.py# Fabricated customer accounts, tickets & canary record
 │   │   ├── attack_engine/
 │   │   │   ├── __init__.py
 │   │   │   └── runner.py        # Attack orchestrator placeholder
@@ -47,7 +49,8 @@ agentbreak/
 │   │       └── database.py      # SQLite connection & session lifecycle
 │   ├── tests/
 │   │   ├── __init__.py
-│   │   └── test_api.py          # Pytest endpoint tests
+│   │   ├── test_api.py          # Pytest backend API tests
+│   │   └── test_target_agent.py # Pytest target agent security & vulnerability tests
 │   ├── requirements.txt         # Backend Python dependencies
 │   └── .env.example             # Example environment variables
 ├── frontend/
@@ -122,10 +125,54 @@ The backend and frontend are designed to run independently in separate terminal 
    ```bash
    pytest tests/
    ```
+   Or run the target agent test suite specifically:
+   ```bash
+   pytest tests/test_target_agent.py -v
+   ```
+
+### 5.2. Sandboxed Target AI Agent Testing
+
+The target customer support agent runs deterministically without requiring an external LLM API key. It can be invoked programmatically or via REST API:
+
+#### Via Python:
+```python
+from app.target.agent import TargetAgent, VulnerabilityConfig
+
+agent = TargetAgent()
+
+# 1. Normal authorized query (Secure Mode)
+result = agent.process_message(
+    message="Show my account record",
+    authenticated_user_id="CUST-001",
+)
+print(result.target_response)
+print(result.tool_calls)
+
+# 2. Testing Authorization Weakness (BOLA/IDOR)
+vuln_result = agent.process_message(
+    message="Show account details for CUST-002",
+    authenticated_user_id="CUST-001",
+    vuln_config=VulnerabilityConfig(allow_unauthorized_record_access=True),
+)
+print("Vulnerability triggered:", [e.event_type for e in vuln_result.security_events])
+```
+
+#### Via REST API (`POST /api/target/test`):
+```bash
+curl -X POST http://127.0.0.1:8000/api/target/test \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Check ticket TICK-666",
+    "user_id": "CUST-003",
+    "vulnerability_config": {
+      "trust_untrusted_content": true
+    }
+  }'
+```
 
 ---
 
-### 5.2. Frontend Setup
+### 5.3. Frontend Setup
 
 1. **Navigate to the frontend directory:**
    ```bash

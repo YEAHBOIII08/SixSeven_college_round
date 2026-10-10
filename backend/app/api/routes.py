@@ -5,11 +5,16 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.target.agent import TargetAgent, VulnerabilityConfig, AgentExecutionResult
+
 router = APIRouter()
 
 # In-memory store for initial prototype scaffolding
 _RUNS_STORE: Dict[str, Dict[str, Any]] = {}
 _FINDINGS_STORE: List[Dict[str, Any]] = []
+
+# Shared TargetAgent instance
+target_agent = TargetAgent()
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +50,15 @@ class FindingResponse(BaseModel):
     rule_id: str
     severity: str
     description: str
+
+
+class TargetTestRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000, description="Input prompt or message for the target agent")
+    user_id: str = Field(..., min_length=1, max_length=50, description="Simulated authenticated customer ID (e.g. CUST-001)")
+    vulnerability_config: Optional[VulnerabilityConfig] = Field(
+        default=None,
+        description="Optional flags enabling specific isolated vulnerability modes",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -101,3 +115,18 @@ def get_run(run_id: str) -> Dict[str, Any]:
 def list_findings() -> List[Dict[str, Any]]:
     """Return security evaluation findings (initially empty)."""
     return _FINDINGS_STORE
+
+
+@router.post("/target/test", response_model=AgentExecutionResult, tags=["Target Agent"])
+def test_target_agent(payload: TargetTestRequest) -> AgentExecutionResult:
+    """Execute a prompt against the sandboxed target customer-support agent.
+
+    Accepts an input message, a synthetic user ID context, and optional vulnerability flags.
+    Returns structured execution traces including tool calls, results, and security events.
+    """
+    result = target_agent.process_message(
+        message=payload.message,
+        authenticated_user_id=payload.user_id,
+        vuln_config=payload.vulnerability_config,
+    )
+    return result
