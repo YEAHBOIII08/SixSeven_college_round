@@ -4,7 +4,6 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { TargetConfigForm } from '@/components/workspace/TargetConfigForm';
 import { LiveActivityFeed } from '@/components/workspace/LiveActivityFeed';
 import { AttackDetailsPanel } from '@/components/workspace/AttackDetailsPanel';
-import { DirectAgentTesterModal } from '@/components/workspace/DirectAgentTesterModal';
 import { api, type StartRunParams } from '@/services/api';
 import type { AttackItem, ScanRun } from '@/types';
 import { Crosshair, RefreshCw } from 'lucide-react';
@@ -19,7 +18,6 @@ export function ScanWorkspace() {
   const [attempts, setAttempts] = useState<AttackItem[]>([]);
   const [selectedAttack, setSelectedAttack] = useState<AttackItem | null>(null);
   const [isScanning, setIsScanning] = useState(false);
-  const [isDirectTestOpen, setIsDirectTestOpen] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -172,7 +170,6 @@ export function ScanWorkspace() {
               onStartScan={handleStartScan}
               onCancelScan={handleCancelScan}
               isScanning={isScanning}
-              onOpenDirectTest={() => setIsDirectTestOpen(true)}
             />
           </div>
 
@@ -193,12 +190,6 @@ export function ScanWorkspace() {
           </div>
         </div>
       </div>
-
-      {/* Direct Agent Tester Modal */}
-      <DirectAgentTesterModal
-        isOpen={isDirectTestOpen}
-        onClose={() => setIsDirectTestOpen(false)}
-      />
     </AppLayout>
   );
 }

@@ -172,59 +172,18 @@ export function Dashboard() {
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <ButtonLink to="/workspace" size="lg">
-                <Plus className="h-5 w-5" />
+            <div className="flex shrink-0 items-center gap-3">
+              <ButtonLink
+                to="/workspace"
+                size="md"
+                className="whitespace-nowrap text-sm font-semibold"
+              >
+                <Plus className="h-4 w-4" />
                 Start New Scan
               </ButtonLink>
             </div>
           </div>
         </Card>
-
-        {/* PRD Features Quick Access */}
-        <div className="mb-8 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card className="p-5 border-accent-500/30 bg-accent-500/5 hover:border-accent-500/50 transition-colors">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-accent-300">
-                  <ShieldCheck className="h-4 w-4 text-accent-400" />
-                  Defense Evaluation Matrix (PRD Section 8)
-                </div>
-                <h4 className="mt-1 text-base font-bold text-white">
-                  ASR vs. Utility Cost Trade-Off
-                </h4>
-                <p className="mt-1 text-xs text-slate-400">
-                  Replays 5-surface attacks against 3 toggleable defenses and tests legitimate completion on 10 benign support tasks.
-                </p>
-              </div>
-              <ButtonLink to="/defenses" variant="secondary" size="sm">
-                Open Matrix
-                <ArrowRight className="h-3.5 w-3.5 ml-1" />
-              </ButtonLink>
-            </div>
-          </Card>
-
-          <Card className="p-5 border-warning-500/30 bg-warning-500/5 hover:border-warning-500/50 transition-colors">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-warning-300">
-                  <RefreshCw className="h-4 w-4 text-warning-400" />
-                  Reproducible Trace Store (PRD Section 7)
-                </div>
-                <h4 className="mt-1 text-base font-bold text-white">
-                  Deterministic Replay Engine
-                </h4>
-                <p className="mt-1 text-xs text-slate-400">
-                  Every attack run saved as an immutable JSON trace with 1-click deterministic re-execution against fresh sandbox targets.
-                </p>
-              </div>
-              <ButtonLink to="/traces" variant="secondary" size="sm">
-                View Traces
-                <ArrowRight className="h-3.5 w-3.5 ml-1" />
-              </ButtonLink>
-            </div>
-          </Card>
-        </div>
 
         {/* Stats row — live connected data */}
         <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     AGENTBREAK_LLM_PROVIDER: str = "gemini"
     AGENTBREAK_LLM_MODEL: str = "gemini-3.5-flash-lite"
     AGENTBREAK_LLM_API_KEY: str = ""
+    ATTACKER_LLM_API_KEY: str = ""
+    TARGET_LLM_API_KEY: str = ""
     AGENTBREAK_LLM_TIMEOUT_SECONDS: int = 25
 
     # Allowed CORS origins for development (e.g. Vite dev and preview servers)

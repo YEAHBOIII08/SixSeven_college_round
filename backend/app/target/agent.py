@@ -82,7 +82,8 @@ class VulnerableFileAgent:
 
     def __init__(self, model_name: Optional[str] = None):
         api_key = (
-            os.getenv("GEMINI_API_KEY")
+            os.getenv("TARGET_LLM_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
             or os.getenv("AGENTBREAK_LLM_API_KEY")
         )
         self.model_name = model_name or os.getenv("GEMINI_MODEL") or "gemini-1.5-flash"

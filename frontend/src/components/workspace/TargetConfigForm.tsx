@@ -11,7 +11,6 @@ import {
   Play,
   XCircle,
   Loader2,
-  Terminal,
   Cpu,
   CheckSquare,
   Square,
@@ -22,14 +21,13 @@ interface TargetConfigFormProps {
   onStartScan: (params: StartRunParams) => Promise<void>;
   onCancelScan: () => Promise<void>;
   isScanning: boolean;
-  onOpenDirectTest: () => void;
+  onOpenDirectTest?: () => void;
 }
 
 export function TargetConfigForm({
   onStartScan,
   onCancelScan,
   isScanning,
-  onOpenDirectTest,
 }: TargetConfigFormProps) {
   const [targetName, setTargetName] = useState('CustomerSupportAgent');
   const [scanMode] = useState<ScanMode>('adaptive');
@@ -100,15 +98,6 @@ export function TargetConfigForm({
       <CardHeader
         title="Target & Scan Configuration"
         icon={<Crosshair className="h-4 w-4" />}
-        action={
-          <button
-            onClick={onOpenDirectTest}
-            className="inline-flex items-center gap-1 rounded border border-accent-500/30 bg-accent-500/10 px-2 py-1 text-[11px] font-medium text-accent-300 hover:bg-accent-500/20"
-          >
-            <Terminal className="h-3 w-3" />
-            Direct Test
-          </button>
-        }
       />
       <div className="space-y-5 p-5">
         {formError && (

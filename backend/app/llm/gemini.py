@@ -91,7 +91,11 @@ class GeminiClient:
     _request_lock = threading.Lock()
 
     def __init__(self, api_key=None, model=None, timeout=None, transport=None, max_retries=None):
-        self.api_key = api_key if api_key is not None else settings.AGENTBREAK_LLM_API_KEY
+        self.api_key = (
+            api_key
+            if api_key is not None
+            else (settings.ATTACKER_LLM_API_KEY or settings.AGENTBREAK_LLM_API_KEY)
+        )
         self.model = model or settings.AGENTBREAK_LLM_MODEL
         self.timeout = timeout or settings.AGENTBREAK_LLM_TIMEOUT_SECONDS
         self.transport = transport
@@ -101,7 +105,7 @@ class GeminiClient:
     @staticmethod
     def is_configured():
         return bool(
-            settings.AGENTBREAK_LLM_API_KEY
+            (settings.ATTACKER_LLM_API_KEY or settings.AGENTBREAK_LLM_API_KEY)
             and settings.AGENTBREAK_LLM_PROVIDER.lower() == "gemini"
             and settings.AGENTBREAK_LLM_MODEL in FREE_MODEL_ALLOWLIST
         )
