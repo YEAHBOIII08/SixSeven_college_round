@@ -48,6 +48,41 @@ def test_gemini_rate_limit_is_bounded(monkeypatch):
     with pytest.raises(LLMProviderError): GeminiClient(api_key="x",transport=httpx.MockTransport(handler)).generate_json("role",{}, {})
     assert len(attempts)==2
 
+def test_call_llm_with_retry_sync(monkeypatch):
+    from app.llm.gemini import call_llm_with_retry_sync
+    monkeypatch.setattr("app.llm.gemini.time.sleep", lambda _: None)
+    attempts = []
+
+    def mock_flaky():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError("429 ResourceExhausted rate limit")
+        return "success"
+
+    res = call_llm_with_retry_sync(mock_flaky, max_retries=4)
+    assert res == "success"
+    assert len(attempts) == 3
+
+
+@pytest.mark.anyio
+async def test_call_llm_with_retry_async(monkeypatch):
+    from app.llm.gemini import call_llm_with_retry
+    import asyncio
+    async def mock_sleep(_):
+        return None
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+    attempts = []
+
+    async def mock_async_flaky():
+        attempts.append(1)
+        if len(attempts) < 2:
+            raise RuntimeError("ResourceExhausted: quota exceeded (429)")
+        return "async_ok"
+
+    res = await call_llm_with_retry(mock_async_flaky, max_retries=3)
+    assert res == "async_ok"
+    assert len(attempts) == 2
+
 def test_role_calls_use_distinct_system_prompts_and_validation_retry():
     class FakeClient:
         def __init__(self):self.prompts=[];self.calls=0

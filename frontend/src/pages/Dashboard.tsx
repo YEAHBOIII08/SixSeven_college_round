@@ -5,11 +5,13 @@ import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { api } from '@/services/api';
-import type { BackendHealth, FindingRecord, ScanRun } from '@/types';
+import type { BackendHealth, FindingRecord, ScanRun, DefenseEvaluationResponse } from '@/types';
 import {
   Plus,
   Radar,
   Shield,
+  ShieldCheck,
+  ShieldAlert,
   Crosshair,
   Activity,
   Clock,
@@ -25,6 +27,7 @@ export function Dashboard() {
   const [runs, setRuns] = useState<ScanRun[]>([]);
   const [findings, setFindings] = useState<FindingRecord[]>([]);
   const [health, setHealth] = useState<BackendHealth | null>(null);
+  const [defenseData, setDefenseData] = useState<DefenseEvaluationResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,10 +35,11 @@ export function Dashboard() {
     try {
       setLoading(true);
       setError(null);
-      const [healthData, runsData, findingsData] = await Promise.allSettled([
+      const [healthData, runsData, findingsData, defData] = await Promise.allSettled([
         api.getHealth(),
         api.getRuns(),
         api.getFindings(),
+        api.evaluateDefenses(),
       ]);
 
       if (healthData.status === 'fulfilled') {
@@ -50,6 +54,10 @@ export function Dashboard() {
 
       if (findingsData.status === 'fulfilled') {
         setFindings(findingsData.value);
+      }
+
+      if (defData.status === 'fulfilled') {
+        setDefenseData(defData.value);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error loading dashboard');
@@ -173,6 +181,51 @@ export function Dashboard() {
           </div>
         </Card>
 
+        {/* PRD Features Quick Access */}
+        <div className="mb-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card className="p-5 border-accent-500/30 bg-accent-500/5 hover:border-accent-500/50 transition-colors">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-accent-300">
+                  <ShieldCheck className="h-4 w-4 text-accent-400" />
+                  Defense Evaluation Matrix (PRD Section 8)
+                </div>
+                <h4 className="mt-1 text-base font-bold text-white">
+                  ASR vs. Utility Cost Trade-Off
+                </h4>
+                <p className="mt-1 text-xs text-slate-400">
+                  Replays 5-surface attacks against 3 toggleable defenses and tests legitimate completion on 10 benign support tasks.
+                </p>
+              </div>
+              <ButtonLink to="/defenses" variant="secondary" size="sm">
+                Open Matrix
+                <ArrowRight className="h-3.5 w-3.5 ml-1" />
+              </ButtonLink>
+            </div>
+          </Card>
+
+          <Card className="p-5 border-warning-500/30 bg-warning-500/5 hover:border-warning-500/50 transition-colors">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-warning-300">
+                  <RefreshCw className="h-4 w-4 text-warning-400" />
+                  Reproducible Trace Store (PRD Section 7)
+                </div>
+                <h4 className="mt-1 text-base font-bold text-white">
+                  Deterministic Replay Engine
+                </h4>
+                <p className="mt-1 text-xs text-slate-400">
+                  Every attack run saved as an immutable JSON trace with 1-click deterministic re-execution against fresh sandbox targets.
+                </p>
+              </div>
+              <ButtonLink to="/traces" variant="secondary" size="sm">
+                View Traces
+                <ArrowRight className="h-3.5 w-3.5 ml-1" />
+              </ButtonLink>
+            </div>
+          </Card>
+        </div>
+
         {/* Stats row — live connected data */}
         <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
           <StatCard
@@ -205,6 +258,77 @@ export function Dashboard() {
             }
           />
         </div>
+
+        {/* Defense Benchmark Summary Table (PRD Section 8 & Benchmark Command) */}
+        {defenseData?.matrix && (
+          <Card className="mb-8 overflow-hidden">
+            <div className="flex items-center justify-between border-b border-base-700/60 px-5 py-4">
+              <div className="flex items-center gap-2.5">
+                <ShieldCheck className="h-4 w-4 text-success-400" />
+                <h3 className="text-sm font-semibold tracking-wide text-slate-200">
+                  Defense Benchmark Summary Matrix
+                </h3>
+                <Badge variant="accent">
+                  Replay Consistency: {Math.round(defenseData.replay_consistency * 100)}%
+                </Badge>
+              </div>
+              <ButtonLink to="/defenses" variant="ghost" size="sm">
+                Full Evaluation Suite
+                <ArrowRight className="h-3.5 w-3.5 ml-1" />
+              </ButtonLink>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-base-700/60 bg-base-850/60 uppercase tracking-wider text-slate-400">
+                    <th className="py-3 px-4 font-medium">Defense Layer</th>
+                    <th className="py-3 px-4 font-medium">Attack Success Rate (ASR)</th>
+                    <th className="py-3 px-4 font-medium">Defense Block Rate</th>
+                    <th className="py-3 px-4 font-medium">Benign Success (BTSR)</th>
+                    <th className="py-3 px-4 font-medium">Utility Cost</th>
+                    <th className="py-3 px-4 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-base-700/40 text-slate-300">
+                  {Object.values(defenseData.matrix).map((cfg) => {
+                    const asrPct = Math.round((cfg.asr ?? 0) * 100);
+                    const blkPct = Math.round((cfg.defense_block_rate ?? 0) * 100);
+                    const btsrPct = Math.round((cfg.btsr ?? 0) * 100);
+                    const costPct = Math.round((cfg.utility_cost ?? 0) * 100);
+
+                    return (
+                      <tr key={cfg.config_key} className="hover:bg-base-800/40">
+                        <td className="py-3 px-4 font-medium text-white flex items-center gap-2">
+                          {cfg.config_key === 'all_defenses' ? (
+                            <ShieldCheck className="h-3.5 w-3.5 text-success-400" />
+                          ) : cfg.config_key === 'none' ? (
+                            <ShieldAlert className="h-3.5 w-3.5 text-danger-400" />
+                          ) : (
+                            <Shield className="h-3.5 w-3.5 text-accent-400" />
+                          )}
+                          <span>{cfg.label}</span>
+                        </td>
+                        <td className="py-3 px-4 font-semibold">
+                          <span className={asrPct > 50 ? 'text-danger-400' : 'text-success-400'}>
+                            {asrPct}%
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-accent-300 font-semibold">{blkPct}%</td>
+                        <td className="py-3 px-4 font-semibold text-success-400">{btsrPct}%</td>
+                        <td className="py-3 px-4 font-semibold text-slate-300">{costPct}%</td>
+                        <td className="py-3 px-4">
+                          <Badge variant={cfg.config_key === 'all_defenses' ? 'success' : cfg.config_key === 'none' ? 'danger' : 'accent'}>
+                            {cfg.config_key === 'none' ? 'Vulnerable' : 'Defended'}
+                          </Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
 
         {/* Recent scans table */}
         <Card>

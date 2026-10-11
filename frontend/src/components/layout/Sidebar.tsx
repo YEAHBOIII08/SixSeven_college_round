@@ -4,7 +4,8 @@ import {
   Crosshair,
   FileText,
   Shield,
-  Settings,
+  ShieldCheck,
+  RefreshCw,
   ChevronRight,
 } from 'lucide-react';
 
@@ -18,6 +19,8 @@ interface NavItem {
 const navItems: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/workspace', label: 'Scan Workspace', icon: Crosshair },
+  { to: '/defenses', label: 'Defense Matrix', icon: ShieldCheck },
+  { to: '/traces', label: 'Trace Store', icon: RefreshCw },
   { to: '/reports', label: 'Reports', icon: FileText },
 ];
 
@@ -66,11 +69,7 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="border-t border-base-700/60 px-3 py-4">
-        <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-500 transition-all duration-200 ease-in-out hover:text-slate-300 hover:bg-base-800/60">
-          <Settings className="h-4.5 w-4.5 shrink-0" />
-          <span>Settings</span>
-        </button>
-        <div className="mt-3 px-3 text-[10px] text-slate-600">
+        <div className="px-3 text-[10px] text-slate-600">
           v0.1.0 — Alpha
         </div>
       </div>

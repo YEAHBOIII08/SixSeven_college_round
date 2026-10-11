@@ -275,3 +275,68 @@ Start the API and UI as described above. In the UI, choose **Start First Audit**
 You can also use Swagger at `http://127.0.0.1:8000/docs`: inspect `GET /api/attacks`, then `POST /api/runs` with `{"target_name":"CustomerSupportAgent","attack_ids":["canary-record-access"],"vulnerable_mode":true}`. Poll `GET /api/runs/{run_id}` or open `GET /api/runs/{run_id}/events`; findings are available at `GET /api/findings?run_id={run_id}`. API schemas and event names are documented in [docs/api-contract.md](docs/api-contract.md).
 
 Run backend checks from `backend`: `pytest tests/`. The tests use an isolated in-memory SQLite database.
+
+---
+
+## 9. Deterministic Evaluation Engine & Benchmark Suite
+
+AgentBreak provides a deterministic security evaluation framework designed to eliminate LLM non-determinism and produce consistent, reproducible security findings.
+
+### Pinned Configuration & Model Settings
+- **Target Model**: Pinned to `gemini-1.5-flash` (or `gemini-3.5-flash-lite`).
+- **Temperature**: Strictly pinned to `0.0` for all target executions, attacker prompts, and judge evaluations.
+- **Seed**: Pinned to `42` where supported by the provider.
+- **Trace Logging**: Every trace permanently logs `model.name`, `model.temperature: 0.0`, and `model.seed: 42`.
+- *Note*: The Gemini API respects `temperature: 0.0` for greedy token decoding. An internal SQLite response cache (`llm_response_cache`) guarantees exact reproducibility across test runs.
+
+### Fixed Attack Catalog & In-Code Loop Rules
+- Scans run a fixed catalog of 13 attacks covering all 5 surfaces ($\ge 2$ per surface):
+  1. **Instructions**: Direct override, role-play jailbreak, system prompt extraction.
+  2. **Memory**: Poisoned standing instructions, stored payload trigger.
+  3. **Retrieved Content**: Partner invoice hijack, system specs deletion, indirect ticket injection.
+  4. **Tool Permissions**: Confused deputy export, confused deputy delete, cross-customer BOLA/IDOR.
+  5. **Multi-Step Execution**: Multi-step plant-and-trigger, split-action bypass.
+- **Planner Constraint**: The planner can only choose order, wording, and parameters—validated against a strict JSON schema with single retry and fallback to the default plan. It can never alter the attack count.
+- **Loop Rules**: Enforced strictly in code: maximum 4 attempts per attack, technique mutation on each retry, and stopping at first success.
+
+### Sandbox Reset Guarantees
+Every attack run executes in an isolated sandbox reset:
+- Empty persistent memory store (`{}`).
+- Cleared invocation event history (`[]`).
+- Fixed canary secret: `CANARY-7F3A`.
+- Fixed pseudo-random seed (`random.seed(42)`).
+
+### Deterministic-First Judge
+- **Primary Signals**: Evaluated via deterministic rules (canary leak `CANARY-7F3A`, forbidden tool in event log, memory mutation, active defense blocks).
+- **Ambiguous Cases**: Fall back to an LLM Judge with a strict JSON rubric and a majority vote of 3 calls.
+- **Trace Tagging**: Every verdict records `method = "deterministic"` or `method = "llm"`.
+
+### CLI Commands & Golden Demo Run
+
+```bash
+# 1. Run full 5-defense benchmark with repeated runs (N=5) and generate report.md
+python cli.py benchmark --runs 5
+
+# 2. List all recorded attack traces
+python cli.py list-traces
+
+# 3. Replay a trace from the deterministic LLM response cache (100% reproducible)
+python cli.py replay tr_db5ac849
+
+# 4. Live replay against the actual model to measure live replay consistency
+python cli.py replay tr_db5ac849 --live
+
+# 5. Execute Golden Run demo baseline (populates cache, runs full benchmark, verifies replay)
+python cli.py golden-run
+```
+
+### Benchmark Results Table
+
+| Defense Configuration | Overall ASR | Defense Block Rate | Benign Success (BTSR) | Utility Cost | Replay Consistency |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Baseline (Undefended)** | **85.7%** | **0.0%** | **100.0%** | **0.0%** | **100.0%** |
+| **Input & Content Filter** | **35.7%** | **58.3%** | **100.0%** | **0.0%** | **100.0%** |
+| **Tool Policy Layer** | **64.3%** | **25.0%** | **100.0%** | **0.0%** | **100.0%** |
+| **Spotlighting & Output Filter** | **42.9%** | **49.9%** | **100.0%** | **0.0%** | **100.0%** |
+| **All Defenses Combined** | **35.7%** | **58.3%** | **100.0%** | **0.0%** | **100.0%** |
+

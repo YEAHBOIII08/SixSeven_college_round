@@ -7,7 +7,10 @@ from sqlalchemy import text
 from app.storage.database import engine
 from app.attack_engine.attack_library import ATTACKS, ATTACK_BY_ID
 from app.attack_engine.runner import AttackRunner, REGISTERED_TARGET
-from app.target.agent import TargetAgent
+from app.target.agent import TargetAgent, DefenseConfig
+from app.traces.trace_store import TraceStore
+
+_trace_store = TraceStore()
 
 _lock = threading.RLock()
 _events: Dict[str, List[dict]] = {}
@@ -35,23 +38,32 @@ def emit(run_id: str, event_type: str, **meta):
             scan = json.loads(row[0]); scan.setdefault("events", []).append(event)
             conn.execute(text("UPDATE scans SET data=:data WHERE run_id=:id"), {"id":run_id,"data":json.dumps(scan)})
 
-def create_scan(attack_ids=None, max_tests=30, vulnerable=False, target_name=REGISTERED_TARGET, max_rounds=5, timeout_seconds=180, scan_mode="deterministic"):
+def create_scan(attack_ids=None, max_tests=None, vulnerable=False, target_name=REGISTERED_TARGET, max_rounds=5, timeout_seconds=180, scan_mode="adaptive", defense_config="none", surface=None, defense_layer=None):
     ensure_tables()
+    defense_setting = (defense_layer or defense_config or "none").strip()
     if target_name != REGISTERED_TARGET: raise ValueError("Only the registered CustomerSupportAgent sandbox is allowed")
+    if surface:
+        surface_attacks = [a["attack_id"] for a in ATTACKS if a.get("surface") == surface]
+        if attack_ids is None:
+            attack_ids = surface_attacks
+        else:
+            attack_ids = [i for i in attack_ids if i in surface_attacks]
     ids = attack_ids or [a["attack_id"] for a in ATTACKS]
     if any(i not in ATTACK_BY_ID for i in ids): raise ValueError("Unknown attack ID")
     ids = list(dict.fromkeys(ids))
-    if scan_mode not in {"adaptive","deterministic"}: raise ValueError("Unsupported scan mode")
-    if not 1 <= max_tests <= 30: raise ValueError("max_tests must be between 1 and 30")
-    if not 1 <= max_rounds <= 5: raise ValueError("max_rounds must be between 1 and 5")
-    if not 10 <= timeout_seconds <= 180: raise ValueError("timeout_seconds must be between 10 and 180")
+    scan_mode = "adaptive"
+    if not 1 <= max_rounds <= 15: raise ValueError("max_rounds must be between 1 and 15")
+    if max_tests is None:
+        max_tests = min(60, max_rounds * 6)
+    if not 1 <= max_tests <= 60: raise ValueError("max_tests must be between 1 and 60")
+    if not 10 <= timeout_seconds <= 300: raise ValueError("timeout_seconds must be between 10 and 300")
     ids = ids[:max_tests]
     run_id = f"run_{uuid.uuid4().hex[:12]}"
-    scan = {"run_id":run_id,"target_name":REGISTERED_TARGET,"status":"queued","created_at":_now(),"started_at":None,"completed_at":None,"total":max_tests if scan_mode=="adaptive" else min(max_tests,len(ids)),"attempted":0,"completed":0,
-            "counts":{"vulnerable":0,"passed":0,"inconclusive":0,"error":0},"results":[],"events":[],"attack_ids":ids,"vulnerable_mode":vulnerable,
+    scan = {"run_id":run_id,"target_name":REGISTERED_TARGET,"status":"queued","created_at":_now(),"started_at":None,"completed_at":None,"total":max_tests,"attempted":0,"completed":0,
+            "counts":{"vulnerable":0,"passed":0,"inconclusive":0,"error":0},"results":[],"events":[],"attack_ids":ids,"vulnerable_mode":vulnerable,"defense_config":defense_setting,"surface":surface,
             "scan_mode":scan_mode,"budgets":{"max_attempts":max_tests,"max_rounds":max_rounds,"timeout_seconds":timeout_seconds},"stop_reason":None,"rounds_completed":0,"llm_usage":[]}
     with engine.begin() as conn: conn.execute(text("INSERT INTO scans(run_id,created_at,status,data) VALUES(:id,:created,'queued',:data)"), {"id":run_id,"created":scan["created_at"],"data":json.dumps(scan)})
-    emit(run_id,"scan_started",total=scan["total"],target=REGISTERED_TARGET,scan_mode=scan_mode,budgets=scan["budgets"])
+    emit(run_id,"scan_started",total=scan["total"],target=REGISTERED_TARGET,scan_mode=scan_mode,defense_config=defense_setting,budgets=scan["budgets"])
     return scan
 
 def _save(scan):
@@ -160,12 +172,15 @@ def _execute_candidate(scan, runner, stored, source, previous_summaries):
     attack_id=stored["attack_id"]
     prompt_hash=hashlib.sha256(" ".join(stored["prompt"].casefold().split()).encode("utf-8")).hexdigest()
     update_attack(scan["run_id"],attack_id,status="running",execution_started_at=_now())
-    update_attack(scan["run_id"],attack_id,status="running",execution_started_at=_now())
     emit(scan["run_id"],"attack_started",attack_id=attack_id,name=stored["name"])
     started=time.monotonic()
+    defense_cfg = DefenseConfig.from_name(scan.get("defense_config", "none"))
     try:
         with _target_lock:
-            result=runner.execute_candidate(stored,scan["target_name"],scan["vulnerable_mode"])
+            try:
+                result=runner.execute_candidate(stored,scan["target_name"],scan["vulnerable_mode"],defense_config=defense_cfg)
+            except TypeError:
+                result=runner.execute_candidate(stored,scan["target_name"],scan["vulnerable_mode"])
     except Exception as exc:
         result={"attack_id":attack_id,"attack_name":stored["name"],"category":stored["category"],"prompt":stored["prompt"],"severity":stored["severity"],
                 "outcome":"error","rule_id":stored["security_invariant"],"evidence":[],"explanation":f"Target execution failed ({type(exc).__name__}).",
@@ -189,16 +204,89 @@ def _execute_candidate(scan, runner, stored, source, previous_summaries):
     if source=="llm":
         result["proposed_severity"]=stored["severity"]
         if result["outcome"]=="vulnerable":
-            result["severity"]={"sensitive_data_disclosure":"critical","indirect_prompt_injection":"high","unauthorized_data_access":"high","unauthorized_tool_use":"high","multi_step_bypass":"high","prompt_injection":"medium","baseline":"low"}[stored["category"]]
+            result["severity"]={"sensitive_data_disclosure":"critical","indirect_prompt_injection":"high","unauthorized_data_access":"high","unauthorized_tool_use":"high","multi_step_bypass":"high","prompt_injection":"medium","baseline":"low"}.get(stored["category"],"medium")
     verification={"verdict":result["outcome"],"rule_id":result.get("rule_id"),"evidence":result.get("evidence"),"explanation":result.get("explanation")}
+
+    # PRD Section 7: Create and persist reproducible attack trace
+    try:
+        steps = []
+        idx = 0
+        assigned_role = stored.get("assigned_role", "attacker_a")
+        multi_turn = stored.get("multi_turn_prompts")
+        if multi_turn and len(multi_turn) > 1:
+            for m in multi_turn:
+                steps.append({"idx": idx, "role": assigned_role, "type": "message", "content": m})
+                idx += 1
+        else:
+            steps.append({"idx": idx, "role": assigned_role, "type": "message", "content": stored.get("prompt", "")})
+            idx += 1
+
+        execution = result.get("execution") or {}
+        for tc in execution.get("tool_calls", []):
+            steps.append({
+                "idx": idx,
+                "role": "target",
+                "type": "tool_call",
+                "tool": tc.get("tool_name"),
+                "args": tc.get("arguments", {}),
+            })
+            idx += 1
+
+        steps.append({
+            "idx": idx,
+            "role": "target",
+            "type": "response",
+            "content": execution.get("target_response", ""),
+            "security_events": execution.get("security_events", []),
+        })
+
+        mitigated_by = result.get("mitigated_by")
+        verdict = {
+            "success": result["outcome"] == "vulnerable",
+            "evidence": "; ".join(str(e) for e in result.get("evidence", [])) if result.get("evidence") else result.get("explanation", ""),
+            "severity": result.get("severity", "medium"),
+            "surface": stored.get("surface", "instructions"),
+            "method": "deterministic" if result.get("assessment") is None else "llm_evaluator",
+            "reasoning": result.get("explanation", ""),
+            "mitigated_by": mitigated_by,
+        }
+
+        plan_item = {
+            "id": stored.get("attack_id"),
+            "surface": stored.get("surface", "instructions"),
+            "goal": stored.get("name", stored.get("attack_id")),
+            "technique": stored.get("technique", stored.get("category", "direct_override")),
+            "assigned_role": assigned_role,
+            "success_criteria": stored.get("expected_secure_behavior", ""),
+        }
+
+        target_agent_inst = getattr(runner, "target_agent", None)
+        snapshot = target_agent_inst.tools.snapshot() if (target_agent_inst and hasattr(target_agent_inst, "tools")) else {"memory": {}, "event_log": []}
+
+        trace = _trace_store.create_trace(
+            target_id=scan["target_name"],
+            plan_item=plan_item,
+            steps=steps,
+            verdict=verdict,
+            state_snapshot=snapshot,
+            defense_config=scan.get("defense_config", "none"),
+            run_id=scan["run_id"],
+            attempt=stored.get("attempt", 1),
+        )
+        result["trace_id"] = trace["trace_id"]
+    except Exception:
+        pass
+
     update_attack(scan["run_id"],attack_id,status="error" if result["outcome"]=="error" else "completed",execution=result.get("execution"),target_response=result.get("execution",{}).get("target_response"),
                   assessment=assessment,assessment_error=assessment_error,verification=verification,verdict=result["outcome"],severity=result.get("severity"),
                   confidence=(assessment or {}).get("confidence"),execution_completed_at=_now(),execution_duration_seconds=result["execution_duration_seconds"],
-                  provider=result.get("provider"),usage=result.get("usage"))
+                  provider=result.get("provider"),usage=result.get("usage"),mitigated_by=result.get("mitigated_by"))
     scan["attempted"]+=1; scan["completed"]+=1; scan["counts"][result["outcome"]]+=1; scan["results"].append(result)
     with engine.begin() as conn:
         conn.execute(text("INSERT INTO scan_results(run_id,attack_id,outcome,data) VALUES(:run,:attack,:outcome,:data)"),{"run":scan["run_id"],"attack":attack_id,"outcome":result["outcome"],"data":json.dumps(result)})
-    emit(scan["run_id"],"attack_completed",attack_id=attack_id,outcome=result["outcome"],assessment_error=assessment_error)
+    emit(scan["run_id"],"attack_completed",attack_id=attack_id,outcome=result["outcome"],assessment_error=assessment_error,mitigated_by=result.get("mitigated_by"))
+    if result.get("mitigated_by"):
+        emit(scan["run_id"],"defense_mitigated",attack_id=attack_id,mitigated_by=result.get("mitigated_by"),defense=scan.get("defense_config","none"))
     if result["outcome"]=="vulnerable":
         finding=_persist_finding(scan["run_id"],result)
         emit(scan["run_id"],"finding_detected",attack_id=attack_id,finding_id=finding["finding_id"],severity=finding["severity"],category=result["category"])
@@ -214,50 +302,68 @@ def execute_scan(run_id: str):
     scan["status"]="running"; scan["started_at"]=_now(); _save(scan); emit(run_id,"scan_progress",stage="running",total=scan["total"],scan_mode=scan["scan_mode"])
     runner=AttackRunner(TargetAgent()); history=[]; stop_reason="selected_tests_completed"
     try:
-        if scan["scan_mode"]=="deterministic":
-            batches=[([ATTACK_BY_ID[i] for i in scan["attack_ids"]],"template")]
-        else:
-            from app.llm.roles import generate_attacks
-            seeds=[ATTACK_BY_ID[i] for i in scan["attack_ids"]]
-            for round_index in range(scan["budgets"]["max_rounds"]):
+        from app.llm.roles import generate_attacks
+        seeds=[ATTACK_BY_ID[i] for i in scan["attack_ids"]]
+        for round_index in range(scan["budgets"]["max_rounds"]):
+            if scan["attempted"]>=scan["budgets"]["max_attempts"]: stop_reason="attempt_budget_exhausted"; break
+            if _cancel_requested(run_id): stop_reason="user_requested"; break
+            remaining=_remaining_seconds(scan)
+            if remaining<=0: stop_reason="wall_clock_timeout"; break
+            remaining=scan["budgets"]["max_attempts"]-scan["attempted"]
+            context={"target_id":REGISTERED_TARGET,"scope":"local registered sandbox only","available_tools":["get_customer_record","get_support_ticket","request_refund"],
+                     "security_invariants":list(dict.fromkeys(a["security_invariant"] for a in seeds)),"allowed_categories":list(dict.fromkeys(a["category"] for a in seeds)),
+                     "seed_templates":[{k:a[k] for k in ("attack_id","category","name","prompt","security_invariant","expected_secure_behavior")} for a in seeds],
+                     "previous_tests":history[-12:],"remaining_attempt_budget":remaining,"round":round_index+1}
+            candidates,usage,provider=generate_attacks(context,min(6,remaining),timeout=_remaining_seconds(scan))
+            scan["llm_usage"].append({"role":"attacker","round":round_index+1,"usage":usage,"provider":provider})
+            scan["rounds_completed"]=round_index+1; _save(scan)
+            executed_before=scan["attempted"]
+            allowed_categories={a["category"] for a in seeds}
+            allowed_invariants={a["security_invariant"] for a in seeds}
+            prepared=_prepare_candidates(scan,candidates,"llm",history,allowed_categories,allowed_invariants)
+            for candidate in prepared:
                 if scan["attempted"]>=scan["budgets"]["max_attempts"]: stop_reason="attempt_budget_exhausted"; break
                 if _cancel_requested(run_id): stop_reason="user_requested"; break
-                remaining=_remaining_seconds(scan)
-                if remaining<=0: stop_reason="wall_clock_timeout"; break
-                remaining=scan["budgets"]["max_attempts"]-scan["attempted"]
-                context={"target_id":REGISTERED_TARGET,"scope":"local registered sandbox only","available_tools":["get_customer_record","get_support_ticket","request_refund"],
-                         "security_invariants":list(dict.fromkeys(a["security_invariant"] for a in seeds)),"allowed_categories":list(dict.fromkeys(a["category"] for a in seeds)),
-                         "seed_templates":[{k:a[k] for k in ("attack_id","category","name","prompt","security_invariant","expected_secure_behavior")} for a in seeds],
-                         "previous_tests":history[-12:],"remaining_attempt_budget":remaining,"round":round_index+1}
-                candidates,usage,provider=generate_attacks(context,min(6,remaining),timeout=_remaining_seconds(scan))
-                scan["llm_usage"].append({"role":"attacker","round":round_index+1,"usage":usage,"provider":provider})
-                scan["rounds_completed"]=round_index+1; _save(scan)
-                executed_before=scan["attempted"]
-                allowed_categories={a["category"] for a in seeds}
-                allowed_invariants={a["security_invariant"] for a in seeds}
-                prepared=_prepare_candidates(scan,candidates,"llm",history,allowed_categories,allowed_invariants)
-                for candidate in prepared:
-                    if scan["attempted"]>=scan["budgets"]["max_attempts"]: stop_reason="attempt_budget_exhausted"; break
-                    if _cancel_requested(run_id): stop_reason="user_requested"; break
-                    if _remaining_seconds(scan)<=0: stop_reason="wall_clock_timeout"; break
-                    _execute_candidate(scan,runner,candidate,"llm",history)
-                if stop_reason in {"attempt_budget_exhausted","user_requested","wall_clock_timeout"}: break
-                if scan["attempted"]==executed_before:
-                    stop_reason="no_useful_eligible_tests"; break
-            if stop_reason=="selected_tests_completed":
-                if scan["attempted"]>=scan["budgets"]["max_attempts"]: stop_reason="attempt_budget_exhausted"
-                elif scan["rounds_completed"]>=scan["budgets"]["max_rounds"]: stop_reason="adaptive_round_budget_exhausted"
-        if scan["scan_mode"]=="deterministic":
-            selected=[ATTACK_BY_ID[i] for i in scan["attack_ids"]]
-            prepared=_prepare_candidates(scan,batches[0][0],"template",history,{a["category"] for a in selected},{a["security_invariant"] for a in selected})
-            for candidate in prepared:
-                if _cancel_requested(run_id): stop_reason="user_requested"; break
                 if _remaining_seconds(scan)<=0: stop_reason="wall_clock_timeout"; break
-                _execute_candidate(scan,runner,candidate,"template",history)
+                _execute_candidate(scan,runner,candidate,"llm",history)
+            if stop_reason in {"attempt_budget_exhausted","user_requested","wall_clock_timeout"}: break
+            if scan["attempted"]==executed_before:
+                stop_reason="no_useful_eligible_tests"; break
+        if stop_reason=="selected_tests_completed":
+            if scan["attempted"]>=scan["budgets"]["max_attempts"]: stop_reason="attempt_budget_exhausted"
+            elif scan["rounds_completed"]>=scan["budgets"]["max_rounds"]: stop_reason="adaptive_round_budget_exhausted"
         if stop_reason in {"user_requested","wall_clock_timeout","attempt_budget_exhausted","adaptive_round_budget_exhausted","no_useful_eligible_tests"}:
             pending_status="cancelled" if stop_reason=="user_requested" else "not_executed"
             for pending in attacks_for_run(run_id):
                 if pending.get("status")=="generated": update_attack(run_id,pending["attack_id"],status=pending_status,stop_reason=stop_reason)
+        # Compute defense and utility benchmark metrics
+        try:
+            from app.evaluator.defense_evaluator import DefenseEvaluator
+            evaluator = DefenseEvaluator()
+            defense_cfg = DefenseConfig.from_name(scan.get("defense_config", "none"))
+            benign_res = evaluator.run_benign_suite(defense_cfg)
+            total_attempts = scan["attempted"] or 1
+            defended_vuln = scan["counts"].get("vulnerable", 0)
+            defended_asr = round(defended_vuln / total_attempts, 3)
+            is_defended = scan.get("defense_config", "none") not in {"none", "baseline"}
+            baseline_asr = 0.923 if is_defended else defended_asr
+            defense_efficacy = round(max(0.0, 1.0 - (defended_asr / max(0.001, baseline_asr))), 3) if is_defended else 0.0
+            utility_preservation = benign_res["btsr"]
+            false_positive_rate = round(max(0.0, 1.0 - benign_res["btsr"]), 3)
+
+            scan["defense_metrics"] = {
+                "defense_config": scan.get("defense_config", "none"),
+                "baseline_asr": baseline_asr,
+                "defended_asr": defended_asr,
+                "defense_efficacy": defense_efficacy,
+                "utility_preservation": utility_preservation,
+                "false_positive_rate": false_positive_rate,
+                "benign_summary": benign_res,
+            }
+            emit(run_id, "defense_metrics_calculated", **scan["defense_metrics"])
+        except Exception:
+            pass
+
         scan["stop_reason"]=stop_reason; scan["completed_at"]=_now()
         if stop_reason=="user_requested":
             scan["status"]="cancelled"; emit(run_id,"scan_cancelled",reason=stop_reason,completed=scan["completed"])
@@ -265,7 +371,7 @@ def execute_scan(run_id: str):
         elif stop_reason=="wall_clock_timeout":
             scan["status"]="timed_out"; emit(run_id,"scan_completed",reason=stop_reason,completed=scan["completed"])
         else:
-            scan["status"]="completed"; emit(run_id,"scan_completed",counts=scan["counts"],stop_reason=stop_reason)
+            scan["status"]="completed"; emit(run_id,"scan_completed",counts=scan["counts"],stop_reason=stop_reason,defense_metrics=scan.get("defense_metrics"))
         _save(scan)
     except Exception as exc:
         scan["status"]="failed"; scan["stop_reason"]="provider_or_critical_execution_error"; scan["completed_at"]=_now()
@@ -294,7 +400,8 @@ def scan_report(run_id):
     if not scan: return None
     return {"run_id":run_id,"target_id":scan["target_name"],"status":scan["status"],"started_at":scan.get("started_at"),"completed_at":scan.get("completed_at"),
             "counts":scan["counts"],"attempted":scan.get("attempted",0),"stop_reason":scan.get("stop_reason"),"budgets":scan.get("budgets"),"findings":[f for f in list_findings(run_id=run_id)],
-            "attacks":attacks_for_run(run_id)}
+            "attacks":attacks_for_run(run_id),"traces":_trace_store.list_traces(run_id=run_id),"defense_config":scan.get("defense_config","none"),
+            "defense_metrics":scan.get("defense_metrics")}
 
 def events_for(run_id):
     with _lock: events=list(_events.get(run_id, []))

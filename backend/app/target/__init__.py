@@ -1,6 +1,13 @@
 """Target agent package exports."""
 
-from app.target.agent import TargetAgent, VulnerabilityConfig, AgentExecutionResult, SecurityEvent
+from app.target.agent import (
+    TargetAgent,
+    VulnerableFileAgent,
+    VulnerableTargetAgent,
+    VulnerabilityConfig,
+    AgentExecutionResult,
+    SecurityEvent,
+)
 from app.target.tools import MockToolExecutor, ToolCallRecord
 from app.target.synthetic_data import (
     SYNTHETIC_CUSTOMERS,
@@ -11,6 +18,8 @@ from app.target.synthetic_data import (
 
 __all__ = [
     "TargetAgent",
+    "VulnerableFileAgent",
+    "VulnerableTargetAgent",
     "VulnerabilityConfig",
     "AgentExecutionResult",
     "SecurityEvent",

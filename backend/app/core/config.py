@@ -21,10 +21,14 @@ class Settings(BaseSettings):
     AGENTBREAK_LLM_API_KEY: str = ""
     AGENTBREAK_LLM_TIMEOUT_SECONDS: int = 25
 
-    # Allowed CORS origins for development (e.g. Vite dev server)
+    # Allowed CORS origins for development (e.g. Vite dev and preview servers)
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
     ]
 
     model_config = SettingsConfigDict(

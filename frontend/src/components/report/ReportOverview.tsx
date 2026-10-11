@@ -209,6 +209,21 @@ export function ReportOverview({ run, report, attacks }: ReportOverviewProps) {
             value={run?.created_at ? new Date(run.created_at).toLocaleString() : '—'}
           />
           <InfoRow
+            icon={<Shield className="h-4 w-4" />}
+            label="Defense Layer"
+            value={
+              (run?.defense_config || report?.defense_config) === 'all_defenses'
+                ? 'All Defenses Combined (Hardened)'
+                : (run?.defense_config || report?.defense_config) === 'tool_policy'
+                ? 'Tool Policy Layer'
+                : (run?.defense_config || report?.defense_config) === 'input_filter'
+                ? 'Input & Content Filter'
+                : (run?.defense_config || report?.defense_config) === 'spotlighting_output'
+                ? 'Spotlighting & Output Filter'
+                : 'Baseline (Undefended)'
+            }
+          />
+          <InfoRow
             icon={<StopCircle className="h-4 w-4" />}
             label="Stop Reason"
             value={
@@ -312,7 +327,7 @@ function InfoRow({
         <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
           {label}
         </div>
-        <div className="mt-0.5 truncate text-xs text-slate-300 font-medium">
+        <div className="mt-0.5 text-xs text-slate-300 font-medium break-words">
           {value}
         </div>
       </div>

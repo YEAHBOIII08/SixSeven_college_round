@@ -88,6 +88,8 @@ export function ScanWorkspace() {
         'attack_generated',
         'attack_started',
         'attack_completed',
+        'defense_mitigated',
+        'defense_metrics_calculated',
         'finding_detected',
         'scan_completed',
         'scan_failed',

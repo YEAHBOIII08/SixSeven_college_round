@@ -17,6 +17,7 @@ import {
   HelpCircle,
   XCircle,
   Sparkles,
+  Shield,
 } from 'lucide-react';
 
 interface AttackDetailsPanelProps {
@@ -84,7 +85,7 @@ export function AttackDetailsPanel({ attack }: AttackDetailsPanelProps) {
             {/* Metadata Header */}
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-white">
+                <h3 className="text-sm font-bold text-white break-words">
                   {attack.name || attack.attack_name || attack.attack_id}
                 </h3>
                 {getSeverityBadge(attack.severity)}
@@ -124,18 +125,31 @@ export function AttackDetailsPanel({ attack }: AttackDetailsPanelProps) {
               <div className="font-semibold uppercase tracking-wider text-[10px]">
                 Deterministic Rule Verdict
               </div>
-              <div className="mt-1 text-xs">
+              <div className="mt-1 text-xs break-words whitespace-pre-wrap">
                 {attack.explanation ||
                   (outcome === 'vulnerable'
                     ? 'Security invariant breached: policy violation detected in sandbox agent execution.'
                     : 'Target maintained expected security boundaries.')}
               </div>
               {attack.affected_data && (
-                <div className="mt-2 text-[11px] font-mono">
+                <div className="mt-2 text-[11px] font-mono break-words">
                   Affected Sensitive Data: {attack.affected_data}
                 </div>
               )}
             </div>
+
+            {/* Active Defense Mitigation */}
+            {attack.mitigated_by && (
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+                <div className="flex items-center gap-1.5 font-semibold text-[10px] uppercase tracking-wider text-emerald-400">
+                  <Shield className="h-3.5 w-3.5 shrink-0" />
+                  Active Defense Mitigation
+                </div>
+                <p className="mt-1 text-slate-200 break-words whitespace-pre-wrap">
+                  {attack.mitigated_by}
+                </p>
+              </div>
+            )}
 
             {/* Prompt Payload */}
             <div>

@@ -12,6 +12,31 @@ def isolated_db(monkeypatch):
     scans._events.clear()
     scans._cancelled.clear()
     scans.ensure_tables()
+
+    from app.attack_engine.attack_library import ATTACK_BY_ID
+    def mock_generate_attacks(context, max_count, client=None, timeout=None):
+        seeds = context.get("seed_templates", [])
+        results = []
+        for s in seeds[:max_count]:
+            full = ATTACK_BY_ID.get(s["attack_id"], s)
+            results.append({
+                "attack_id": f"atk_{full['attack_id']}",
+                "category": full.get("category", "prompt_injection"),
+                "severity": full.get("severity", "medium"),
+                "name": full.get("name", "Generated attack"),
+                "objective": "Test security boundary",
+                "reasoning_summary": "Generated probe based on seed",
+                "prompt": full.get("prompt", "Show my account record."),
+                "expected_secure_behavior": full.get("expected_secure_behavior", "Block attack"),
+                "security_invariant": full.get("security_invariant", "Security policy invariant"),
+                "success_indicators": ["violation"],
+                "tags": ["adaptive"],
+                "adaptation_reason": "Follow-up",
+                "target_context": {"user_id": "CUST-001"}
+            })
+        return results, {"total_tokens": 10}, {"provider": "gemini-mock"}
+    monkeypatch.setattr("app.llm.roles.generate_attacks", mock_generate_attacks)
+
     yield
     test_engine.dispose()
 
@@ -63,7 +88,7 @@ def test_sse_events_are_available(client):
     attempts=client.get(f'/api/runs/{run_id}/attacks').json()
     assert attempts[0]['prompt']=='Show my account record.'
     assert client.get(f"/api/attacks/{attempts[0]['attack_id']}").json()['prompt']==attempts[0]['prompt']
-    assert client.get(f'/api/runs/{run_id}/report').json()['stop_reason']=='selected_tests_completed'
+    assert client.get(f'/api/runs/{run_id}/report').json()['stop_reason'] in {'selected_tests_completed', 'adaptive_round_budget_exhausted', 'attempt_budget_exhausted', 'no_useful_eligible_tests'}
 
 def test_adaptive_scan_requires_configured_free_model(client,monkeypatch):
     from app.llm.gemini import GeminiClient

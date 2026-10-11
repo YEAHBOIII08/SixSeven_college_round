@@ -146,9 +146,9 @@ export function ReportAttackTimeline({ attacks }: ReportAttackTimelineProps) {
                     <span className="flex h-6 w-6 items-center justify-center rounded-full bg-base-800 text-[10px] font-mono text-slate-400">
                       {index + 1}
                     </span>
-                    <div className="truncate">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-white truncate">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-white break-words">
                           {atk.name || atk.attack_name || atk.attack_id}
                         </span>
                         {atk.source === 'llm' && (

@@ -6,6 +6,7 @@ import { ReportOverview } from '@/components/report/ReportOverview';
 import { ReportFindings } from '@/components/report/ReportFindings';
 import { ReportAttackTimeline } from '@/components/report/ReportAttackTimeline';
 import { ReportDefenseValidation } from '@/components/report/ReportDefenseValidation';
+import { ReportAttackTraces } from '@/components/report/ReportAttackTraces';
 import { api } from '@/services/api';
 import type { AttackItem, FindingRecord, ScanReportData, ScanRun } from '@/types';
 import {
@@ -19,7 +20,7 @@ import {
   Crosshair,
 } from 'lucide-react';
 
-type TabId = 'overview' | 'findings' | 'timeline' | 'defense';
+type TabId = 'overview' | 'findings' | 'timeline' | 'defense' | 'traces';
 
 interface TabDef {
   id: TabId;
@@ -96,6 +97,11 @@ export function ScanReport() {
       id: 'defense',
       label: 'Defense Validation',
       icon: ShieldCheck,
+    },
+    {
+      id: 'traces',
+      label: `Attack Traces & Replay (${report?.traces?.length || 0})`,
+      icon: RefreshCw,
     },
   ];
 
@@ -185,8 +191,15 @@ export function ScanReport() {
             {activeTab === 'defense' && (
               <ReportDefenseValidation
                 run={run}
+                report={report}
                 attacks={attacks}
                 findings={findings}
+              />
+            )}
+            {activeTab === 'traces' && (
+              <ReportAttackTraces
+                runId={id}
+                initialTraces={report?.traces}
               />
             )}
           </div>
